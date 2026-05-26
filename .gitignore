@@ -1,0 +1,17 @@
+venv/
+
+__pycache__/
+*.pyc
+
+.vscode/
+.idea/
+
+data/generated/
+models/trained/
+
+*.csv
+*.xlsx
+
+.DS_Store
+Thumbs.db
+desktop.ini
