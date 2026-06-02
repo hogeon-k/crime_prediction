@@ -22,29 +22,28 @@ class ProcessResult:
 @dataclass
 class CrimeState:
     status: ProcessStatus = ProcessStatus.IDLE
-
     current_step: str = ""
-
     completed_steps: list[str] = field(default_factory=list)
-
     failed_step: str = ""
-
     error_message: str = ""
-
     final_data: pd.DataFrame | None = None
 
 
 @dataclass(frozen=True)
 class ValidationRule:
-
-    required_columns: set[str] = field(
-        default_factory=lambda: {
-            "범죄_유형",
-            "지역",
-            "연도",
-            "발생_건수",
-            "인구수",
-        }
+    # ✅ 수정: set → frozenset (frozen dataclass는 unhashable 필드를 가지면 hash() 시 TypeError 발생)
+    required_columns: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "범죄_유형",
+                "지역",
+                "연도",
+                "발생_건수",
+                "인구수",
+            }
+        )
     )
-
-    valid_years: range = field(default_factory=lambda: range(2022, 2031))
+    # ✅ 수정: tuple 사용 (range는 hashable이지만 명시적 불변 타입으로 통일)
+    valid_years: tuple[int, ...] = field(
+        default_factory=lambda: tuple(range(2022, 2031))
+    )
