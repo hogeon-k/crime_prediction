@@ -11,11 +11,10 @@ class CrimeView:
     def render(self, state: CrimeState) -> None:
 
         if state.status == ProcessStatus.SUCCESS:
-            # ✅ 수정: 중복 출력 제거, \r 라인 정리 후 단일 성공 메시지 출력
-            print()  # 진행중 \r 라인 정리
-            print("✅ 처리 완료")
 
-            # ✅ 추가: final_data None 방어
+            print()  # 진행중 \r 라인 정리
+            print("처리 완료")
+
             if state.final_data is not None:
                 print(f"\n[결과 미리보기 - 상위 5행]")
                 print(state.final_data.head().to_string(index=False))
@@ -25,7 +24,7 @@ class CrimeView:
 
         elif state.status == ProcessStatus.FAILED:
             print()  # 진행중 \r 라인 정리
-            print(f"❌ 실패 단계: {state.failed_step}")
+            print(f"   실패 단계: {state.failed_step}")
             print(f"   오류 내용: {state.error_message}")
 
         else:

@@ -32,7 +32,6 @@ class CrimeViewModel:
             4. 타입 변환    (DataFrame → DataFrame)
         """
 
-        # ✅ 개선: 1단계는 파일 경로를 받으므로 별도 처리, 이후 단계는 df를 전달
         steps = [
             (
                 "데이터 병합",
@@ -51,7 +50,6 @@ class CrimeViewModel:
             self.state.current_step = name
             self._callback(self.state)
 
-            # ✅ 추가: 1단계 이외에서 df가 None이면 파이프라인 설계 오류
             if name != "데이터 병합" and df is None:
                 self._set_failed(name, "이전 단계 결과 데이터가 없습니다.")
                 return
@@ -70,7 +68,6 @@ class CrimeViewModel:
         self._callback(self.state)
 
     def _set_failed(self, step: str, message: str) -> None:
-        """✅ 추가: 실패 상태 설정 및 콜백 호출을 한 곳에서 처리"""
         self.state.status = ProcessStatus.FAILED
         self.state.failed_step = step
         self.state.error_message = message

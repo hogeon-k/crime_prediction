@@ -31,7 +31,7 @@ class CrimeState:
 
 @dataclass(frozen=True)
 class ValidationRule:
-    # ✅ 수정: set → frozenset (frozen dataclass는 unhashable 필드를 가지면 hash() 시 TypeError 발생)
+
     required_columns: frozenset[str] = field(
         default_factory=lambda: frozenset(
             {
@@ -43,7 +43,7 @@ class ValidationRule:
             }
         )
     )
-    # ✅ 수정: tuple 사용 (range는 hashable이지만 명시적 불변 타입으로 통일)
+
     valid_years: tuple[int, ...] = field(
         default_factory=lambda: tuple(range(2022, 2031))
     )
