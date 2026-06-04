@@ -19,9 +19,9 @@ _SIDO_SHORT: dict[str, str] = {
     "광주광역시": "광주",
     "대전광역시": "대전",
     "울산광역시": "울산",
-    "세종특별자치시": "세종시",  # 범죄 CSV: 구 없이 '세종시' 단독
+    "세종특별자치시": "세종시",
     "경기도": "경기도",
-    "강원특별자치도": "강원도",  # 범죄 CSV는 구 명칭 '강원도' 유지
+    "강원특별자치도": "강원도",
     "충청북도": "충북",
     "충청남도": "충남",
     "전북특별자치도": "전북",
@@ -34,12 +34,16 @@ _SIDO_SHORT: dict[str, str] = {
 
 def _read_csv_safe(file: str) -> pd.DataFrame:
     """인코딩을 순차적으로 시도하며 CSV를 읽어 반환합니다."""
+    last_error: Exception = ValueError("알 수 없는 오류")
     for enc in _ENCODINGS:
         try:
             return pd.read_csv(file, encoding=enc)
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as e:
+            last_error = e
             continue
-    raise ValueError(f"지원하는 인코딩으로 파일을 읽을 수 없습니다: {file}")
+    raise ValueError(
+        f"지원하는 인코딩으로 파일을 읽을 수 없습니다: {file}"
+    ) from last_error
 
 
 def _extract_year(filename: str) -> int:
@@ -56,22 +60,6 @@ def _extract_year(filename: str) -> int:
 def _normalize_region(series: pd.Series) -> pd.Series:
     """지역명 정규화: 앞뒤 공백 제거, 연속 공백 단일화."""
     return series.astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
-
-
-def _extract_top_sigungu(name: str) -> str:
-    """
-    인구 CSV의 시군구명에서 상위 행정구역(시·군)만 추출합니다.
-
-    인구 CSV는 특별시·광역시 산하 자치구와 대도시 산하 구까지
-    세분화되어 있어 범죄 CSV의 '시' 단위와 불일치합니다.
-
-    '수원시 장안구' → '수원시'   (대도시 내부 구 제거)
-    '고양시 덕양구' → '고양시'
-    '종로구'        → '종로구'   (광역시 자치구는 그대로 유지)
-    """
-    s = str(name).strip()
-    m = re.match(r"^(\S+시|\S+군)\s+\S+구$", s)
-    return m.group(1) if m else s
 
 
 class CrimeService:
@@ -104,11 +92,12 @@ class CrimeService:
 
     def _load_crime(self, crime_files: list[str]) -> pd.DataFrame:
         """
-        범죄 CSV를 읽어 long-format으로 변환합니다.
+        범죄 CSV를 읽어 시도 단위 long-format으로 변환합니다.
 
-        주요 처리:
-        - '외국 미국' 등 해외 지역 제거 (인구 데이터 없음)
-        - melt 직후 발생_건수 숫자 변환 (원본에 '-', 'N/A' 혼재 가능)
+        연도별 집계 단위 차이 처리:
+        - 2022·2023: 시도 단위 컬럼 ('서울', '부산', ...)
+        - 2024     : 시군구 단위 컬럼 ('서울 종로구', '서울 중구', ...)
+                     → 시도 단위로 합산하여 연도 간 통일
         """
         frames: list[pd.DataFrame] = []
 
@@ -127,15 +116,20 @@ class CrimeService:
                 value_name="발생_건수",
             )
 
-            # 추가: 해외 지역 제거 (인구 CSV에 대응 데이터 없음)
             crime = crime[~crime["지역"].str.startswith("외국")].copy()
-
             crime["범죄_유형"] = crime["범죄중분류"]
             crime["연도"] = year
             crime["지역"] = _normalize_region(crime["지역"])
-
-            # 추가: melt 직후 즉시 숫자 변환
             crime["발생_건수"] = pd.to_numeric(crime["발생_건수"], errors="coerce")
+
+            # 시군구 단위(공백 포함) → 시도만 추출 후 합산
+            if " " in region_cols[0]:
+                crime["지역"] = crime["지역"].str.split(" ").str[0]
+                crime = pd.DataFrame(
+                    crime.groupby(["범죄_유형", "지역", "연도"], as_index=False)[
+                        "발생_건수"
+                    ].sum()
+                )
 
             frames.append(crime[["범죄_유형", "지역", "연도", "발생_건수"]])
 
@@ -143,13 +137,11 @@ class CrimeService:
 
     def _load_population(self, pop_files: list[str]) -> pd.DataFrame:
         """
-        인구 CSV를 읽어 범죄 CSV와 merge 가능한 지역·연도 단위로 집계합니다.
+        인구 CSV를 읽어 시도·연도 단위로 집계합니다.
 
-        핵심 수정 3가지:
-        ① 시도명 전체명 → 약칭 변환  ('서울특별시' → '서울')
-        ② 세종 단독 처리            ('세종특별자치시 세종시' → '세종시')
-        ③ 대도시 구 → 시 단위 통합  ('수원시 장안구' → '수원시')
-           → 범죄 CSV가 시 단위 집계이므로 인구도 동일하게 맞춤
+        연도별 컬럼명 차이 처리:
+        - 2022·2023: '통계년월'
+        - 2024     : '기준연월'
         """
         frames: list[pd.DataFrame] = []
 
@@ -157,26 +149,26 @@ class CrimeService:
             raw = _read_csv_safe(file)
 
             sido_short = raw["시도명"].map(_SIDO_SHORT).fillna(raw["시도명"])
-            is_sejong = raw["시도명"] == "세종특별자치시"
-            top_sigungu = raw["시군구명"].astype(str).apply(_extract_top_sigungu)
 
-            지역 = _normalize_region(sido_short + " " + top_sigungu)
-            지역[is_sejong] = "세종시"
-
+            연월_col = "기준연월" if "기준연월" in raw.columns else "통계년월"
             연도 = pd.to_numeric(
-                raw["기준연월"].astype(str).str[:4], errors="coerce"
+                raw[연월_col].astype(str).str[:4], errors="coerce"
             ).astype("Int64")
 
             인구수 = pd.to_numeric(raw["계"], errors="coerce")
 
-            # 수정: 컬럼을 개별 추가하지 않고 pd.concat으로 한 번에 조립
-            #    → PerformanceWarning(DataFrame highly fragmented) 제거
             pop = pd.concat(
-                [지역.rename("지역"), 연도.rename("연도"), 인구수.rename("인구수")],
+                [
+                    sido_short.rename("지역"),
+                    연도.rename("연도"),
+                    인구수.rename("인구수"),
+                ],
                 axis=1,
             )
 
-            pop = pop.groupby(["지역", "연도"], as_index=False)["인구수"].sum()
+            pop = pd.DataFrame(
+                pop.groupby(["지역", "연도"], as_index=False)["인구수"].sum()
+            )
             frames.append(pop)
 
         return pd.concat(frames, ignore_index=True)
@@ -189,7 +181,6 @@ class CrimeService:
         if missing:
             return ProcessResult(False, f"컬럼 누락: {missing}")
 
-        # 수정: valid_years 실제 사용
         if "연도" in df.columns:
             valid_set = set(self._rule.valid_years)
             actual_years = set(df["연도"].dropna().unique())
@@ -235,7 +226,6 @@ class CrimeService:
                 pd.to_numeric(df["인구수"], errors="coerce").fillna(0).astype(int)
             )
 
-            # 수정: apply 람다 → 벡터 연산 (성능 개선)
             df["범죄율"] = (
                 df["발생_건수"] / df["인구수"].replace(0, pd.NA) * 100_000
             ).fillna(0.0)
