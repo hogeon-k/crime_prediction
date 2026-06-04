@@ -12,7 +12,7 @@ class CrimeView:
 
         if state.status == ProcessStatus.SUCCESS:
 
-            print()  # 진행중 \r 라인 정리
+            print()
             print("처리 완료")
 
             if state.final_data is not None:
@@ -23,12 +23,11 @@ class CrimeView:
                 print("(출력할 데이터가 없습니다)")
 
         elif state.status == ProcessStatus.FAILED:
-            print()  # 진행중 \r 라인 정리
+            print()
             print(f"   실패 단계: {state.failed_step}")
             print(f"   오류 내용: {state.error_message}")
 
         else:
-            # 진행 중: \r로 같은 줄 덮어쓰기
             completed = len(state.completed_steps)
             print(
                 f"\r[{completed}단계 완료] 현재: {state.current_step}...",

@@ -33,7 +33,7 @@ _SIDO_SHORT: dict[str, str] = {
 
 
 def _read_csv_safe(file: str) -> pd.DataFrame:
-    """인코딩을 순차적으로 시도하며 CSV를 읽어 반환합니다."""
+    """인코딩을 순차적으로 시도하며 CSV를 읽어 반환"""
     last_error: Exception = ValueError("알 수 없는 오류")
     for enc in _ENCODINGS:
         try:
@@ -47,7 +47,7 @@ def _read_csv_safe(file: str) -> pd.DataFrame:
 
 
 def _extract_year(filename: str) -> int:
-    """파일명에서 연도(20XX)를 정규식으로 추출합니다."""
+    """파일명에서 연도(20XX)를 정규식으로 추출"""
     match = re.search(r"(20\d{2})", Path(filename).stem)
     if match is None:
         raise ValueError(
@@ -67,9 +67,7 @@ class CrimeService:
     def __init__(self) -> None:
         self._rule = ValidationRule()
 
-    # ------------------------------------------------------------------
-    # 1단계: 파일 로드 & 병합
-    # ------------------------------------------------------------------
+    # 파일 로드 병합
     def load_and_merge(
         self,
         crime_files: list[str],
@@ -173,9 +171,7 @@ class CrimeService:
 
         return pd.concat(frames, ignore_index=True)
 
-    # ------------------------------------------------------------------
-    # 2단계: 컬럼 검증 + 연도 범위 검증
-    # ------------------------------------------------------------------
+    # 컬럼 검증 연도 병합
     def validate(self, df: pd.DataFrame) -> ProcessResult:
         missing = self._rule.required_columns - set(df.columns)
         if missing:
@@ -194,9 +190,7 @@ class CrimeService:
 
         return ProcessResult(True, "검증 성공", df)
 
-    # ------------------------------------------------------------------
-    # 3단계: 결측치 처리
-    # ------------------------------------------------------------------
+    # 결측치 처리
     def handle_missing(self, df: pd.DataFrame) -> ProcessResult:
         df = df.copy()
 
@@ -211,9 +205,7 @@ class CrimeService:
 
         return ProcessResult(True, "결측치 처리 완료", df)
 
-    # ------------------------------------------------------------------
-    # 4단계: 타입 변환 및 범죄율 계산
-    # ------------------------------------------------------------------
+    # 타입 변환, 범죄율 계산
     def convert_types(self, df: pd.DataFrame) -> ProcessResult:
         try:
             df = df.copy()

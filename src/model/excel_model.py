@@ -21,6 +21,7 @@ class ProcessResult:
 
 @dataclass
 class CrimeState:
+    # 현재 프로그램 상태를 저장
     status: ProcessStatus = ProcessStatus.IDLE
     current_step: str = ""
     completed_steps: list[str] = field(default_factory=list)
