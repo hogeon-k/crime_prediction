@@ -9,6 +9,29 @@ from model.excel_model import ProcessResult, ValidationRule
 
 _ENCODINGS = ("utf-8-sig", "euc-kr", "cp949")
 
+# 업로드 파일 컬럼 별칭 → 표준 컬럼명
+_COLUMN_ALIASES: dict[str, list[str]] = {
+    "범죄_유형": [
+        "범죄_유형",
+        "범죄유형",
+        "범죄 유형",
+        "범죄중분류",
+        "crime_type",
+    ],
+    "지역": ["지역", "region", "시도", "시도명"],
+    "연도": ["연도", "날짜", "date", "year", "기준연도"],
+    "발생_건수": [
+        "발생_건수",
+        "발생건수",
+        "범죄발생건수",
+        "범죄 발생 건수",
+        "건수",
+        "count",
+        "발생 건수",
+    ],
+    "인구수": ["인구수", "인구", "population"],
+}
+
 # 인구 CSV 시도명(전체) → 범죄 CSV 시도명(약칭) 매핑
 #    예: '서울특별시' → '서울', '강원특별자치도' → '강원도'
 _SIDO_SHORT: dict[str, str] = {
@@ -46,6 +69,67 @@ def _read_csv_safe(file: str) -> pd.DataFrame:
     ) from last_error
 
 
+def _read_file_safe(file: str) -> pd.DataFrame:
+    """CSV 또는 Excel 파일을 읽어 반환"""
+    path = Path(file)
+    if not path.exists():
+        raise ValueError(f"파일을 찾을 수 없습니다: {file}")
+
+    suffix = path.suffix.lower()
+    if suffix in (".xlsx", ".xls"):
+        return pd.read_excel(file, engine="openpyxl")
+    if suffix == ".csv":
+        return _read_csv_safe(file)
+    raise ValueError(
+        f"지원하지 않는 파일 형식입니다: {suffix}\n"
+        "지원 형식: .csv, .xlsx, .xls"
+    )
+
+
+def _normalize_upload_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """업로드 파일 컬럼명을 표준 스키마로 통일"""
+    df = df.copy()
+    stripped = {col: str(col).strip() for col in df.columns}
+    rename_map: dict[str, str] = {}
+
+    for standard, aliases in _COLUMN_ALIASES.items():
+        alias_set = {a.lower() for a in aliases}
+        for col, name in stripped.items():
+            if col in rename_map:
+                continue
+            if name in aliases or name.lower() in alias_set:
+                rename_map[col] = standard
+
+    df = df.rename(columns=rename_map)
+
+    required = {"범죄_유형", "지역", "연도", "발생_건수"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"필수 컬럼 누락: {sorted(missing)}\n"
+            f"인식 가능한 컬럼 예시: {list(_COLUMN_ALIASES.keys())}"
+        )
+
+    if pd.api.types.is_datetime64_any_dtype(df["연도"]):
+        df["연도"] = df["연도"].dt.year
+    else:
+        numeric = pd.to_numeric(df["연도"], errors="coerce")
+        if numeric.notna().all() and numeric.between(1900, 2100).all():
+            df["연도"] = numeric
+        else:
+            parsed = pd.to_datetime(df["연도"], errors="coerce")
+            if parsed.notna().sum() > 0:
+                df["연도"] = parsed.dt.year
+            else:
+                df["연도"] = numeric
+
+    df["발생_건수"] = pd.to_numeric(df["발생_건수"], errors="coerce")
+    if "인구수" in df.columns:
+        df["인구수"] = pd.to_numeric(df["인구수"], errors="coerce")
+
+    return df
+
+
 def _extract_year(filename: str) -> int:
     """파일명에서 연도(20XX)를 정규식으로 추출"""
     match = re.search(r"(20\d{2})", Path(filename).stem)
@@ -66,6 +150,18 @@ class CrimeService:
 
     def __init__(self) -> None:
         self._rule = ValidationRule()
+
+    def load_uploaded(self, file_path: str) -> ProcessResult:
+        """표준 양식 Excel/CSV 단일 파일 업로드 로드"""
+        try:
+            raw = _read_file_safe(file_path)
+            df = _normalize_upload_columns(raw)
+            df["지역"] = _normalize_region(df["지역"])
+            if "인구수" not in df.columns:
+                df["인구수"] = pd.NA
+            return ProcessResult(True, "업로드 로드 성공", df)
+        except Exception as exc:
+            return ProcessResult(False, f"업로드 로드 실패: {exc}")
 
     # 파일 로드 병합
     def load_and_merge(
@@ -101,7 +197,7 @@ class CrimeService:
 
         for file in crime_files:
             year = _extract_year(file)
-            crime = _read_csv_safe(file)
+            crime = _read_file_safe(file)
 
             region_cols = [
                 col for col in crime.columns if col not in ["범죄대분류", "범죄중분류"]
@@ -144,7 +240,7 @@ class CrimeService:
         frames: list[pd.DataFrame] = []
 
         for file in pop_files:
-            raw = _read_csv_safe(file)
+            raw = _read_file_safe(file)
 
             sido_short = raw["시도명"].map(_SIDO_SHORT).fillna(raw["시도명"])
 
