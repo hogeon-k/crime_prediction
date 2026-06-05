@@ -5,10 +5,8 @@ Run:
     python test_dummy_generator.py
 """
 
-import sys
+import sys, os
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from model.excel_model import ProcessStatus
 from services.dummy_generator import (
@@ -19,6 +17,9 @@ from services.dummy_generator import (
     run_generation_pipeline,
 )
 from viewmodel.crime_viewmodel import CrimeViewModel
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
 
 COL_CRIME = "\ubc94\uc8c4_\uc720\ud615"
 COL_REGION = "\uc9c0\uc5ed"

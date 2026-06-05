@@ -5,16 +5,17 @@ Run:
     python test_excel_upload.py
 """
 
-import sys
+import sys, os
 from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-
 from model.excel_model import UploadParams
 from services.crime_service import CrimeService
 from services.excel_pipeline import run_excel_pipeline
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
 
 COL_CRIME = "\ubc94\uc8c4_\uc720\ud615"
 COL_REGION = "\uc9c0\uc5ed"

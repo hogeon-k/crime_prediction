@@ -1,9 +1,10 @@
 import sys
 from pathlib import Path
 
+from services.crime_service import CrimeService
+
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from services.crime_service import CrimeService
 
 crime_files = [
     "data/crime_region_2022.csv",

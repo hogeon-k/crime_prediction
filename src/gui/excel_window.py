@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import pandas as pd
 
-from gui.main_window import (
+from gui.crime_generator_window import (
     ACCENT,
     BG,
     BORDER,
@@ -38,6 +38,8 @@ C_RATE = "\ubc94\uc8c4\uc728"
 
 
 class ExcelWindow:
+    """범죄 데이터 Excel/CSV 업로드 및 처리 UI를 담당하는 윈도우 클래스"""
+
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("\ubc94\uc8c4 \ub370\uc774\ud130 Excel \uc5c5\ub85c\ub4dc")
