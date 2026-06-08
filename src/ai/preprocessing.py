@@ -4,6 +4,13 @@ DEFAULT_FEATURE_COLUMNS = ["연도", "지역", "범죄_유형", "인구수"]
 DEFAULT_TARGET_COLUMN = "발생_건수"
 DEFAULT_TRAIN_YEARS = (2022, 2023)
 DEFAULT_TEST_YEAR = 2024
+CRIME_RATE_COLUMN = "범죄율"
+ENGINEERED_FEATURE_COLUMNS = [
+    "전년도_발생_건수",
+    "전년도_범죄율",
+    "지역별_평균_발생_건수",
+    "범죄유형별_평균_발생_건수",
+]
 
 _REGION_ALIASES = {
     "서울특별시": "서울",
@@ -119,6 +126,30 @@ def normalize_prediction_features(
     return normalized
 
 
+def unknown_prediction_categories(
+    X: pd.DataFrame,
+    encoded_columns: list[str] | None = None,
+) -> dict[str, list[str]]:
+    if encoded_columns is None:
+        return {}
+
+    unknown: dict[str, list[str]] = {}
+    checks = {
+        "지역": _known_category_values(encoded_columns, "지역"),
+        "범죄_유형": _known_category_values(encoded_columns, "범죄_유형"),
+    }
+
+    for column, known_values in checks.items():
+        if column not in X.columns or not known_values:
+            continue
+        values = set(X[column].dropna().astype(str))
+        missing = sorted(values - known_values)
+        if missing:
+            unknown[column] = missing
+
+    return unknown
+
+
 def encode_features(
     X: pd.DataFrame,
     encoded_columns: list[str] | None = None,
@@ -134,13 +165,124 @@ def encode_features(
     return encoded_X
 
 
+def build_feature_engineering_stats(
+    df: pd.DataFrame,
+    target_column: str = DEFAULT_TARGET_COLUMN,
+) -> dict:
+    population_column = DEFAULT_FEATURE_COLUMNS[3]
+    required_columns = {"지역", "범죄_유형", population_column, target_column}
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        raise ValueError(f"feature engineering 필수 컬럼이 없습니다: {sorted(missing_columns)}")
+
+    target = pd.to_numeric(df[target_column], errors="coerce")
+    population = pd.to_numeric(df[population_column], errors="coerce")
+    global_mean = float(target.mean()) if not target.dropna().empty else 0.0
+
+    return {
+        "global_mean_incidents": global_mean,
+        "region_mean_incidents": (
+            df.assign(_target=target).groupby("지역")["_target"].mean().to_dict()
+        ),
+        "crime_type_mean_incidents": (
+            df.assign(_target=target).groupby("범죄_유형")["_target"].mean().to_dict()
+        ),
+        "region_crime_mean_incidents": (
+            df.assign(_target=target)
+            .groupby(["지역", "범죄_유형"])["_target"]
+            .mean()
+            .to_dict()
+        ),
+        "region_mean_population": (
+            df.assign(_population=population).groupby("지역")["_population"].mean().to_dict()
+        ),
+        "region_population_bounds": (
+            df.assign(_population=population)
+            .groupby("지역")["_population"]
+            .agg(["min", "max"])
+            .to_dict("index")
+        ),
+    }
+
+
+def add_feature_engineering(
+    df: pd.DataFrame,
+    stats: dict | None = None,
+    target_column: str = DEFAULT_TARGET_COLUMN,
+) -> pd.DataFrame:
+    engineered = df.copy()
+
+    if stats is None and target_column in engineered.columns:
+        stats = build_feature_engineering_stats(engineered, target_column=target_column)
+    if stats is None:
+        stats = {
+            "global_mean_incidents": 0.0,
+            "region_mean_incidents": {},
+            "crime_type_mean_incidents": {},
+            "region_crime_mean_incidents": {},
+            "region_mean_population": {},
+            "region_population_bounds": {},
+        }
+
+    global_mean = float(stats.get("global_mean_incidents", 0.0))
+    region_means = stats.get("region_mean_incidents", {})
+    crime_type_means = stats.get("crime_type_mean_incidents", {})
+    region_crime_means = stats.get("region_crime_mean_incidents", {})
+    region_population_means = stats.get("region_mean_population", {})
+    population_column = DEFAULT_FEATURE_COLUMNS[3]
+
+    engineered["지역별_평균_발생_건수"] = engineered["지역"].map(region_means)
+    engineered["범죄유형별_평균_발생_건수"] = engineered["범죄_유형"].map(crime_type_means)
+
+    fallback_key_values = []
+    for _, row in engineered.iterrows():
+        region = row["지역"]
+        crime_type = row["범죄_유형"]
+        fallback_value = region_crime_means.get((region, crime_type), global_mean)
+        mean_population = region_population_means.get(region)
+
+        if population_column in engineered.columns and mean_population:
+            population_value = pd.to_numeric(row[population_column], errors="coerce")
+            if pd.notna(population_value) and mean_population > 0:
+                fallback_value *= float(population_value) / float(mean_population)
+
+        fallback_key_values.append(fallback_value)
+    engineered["전년도_발생_건수"] = fallback_key_values
+    engineered["전년도_범죄율"] = 0.0
+
+    if {target_column, CRIME_RATE_COLUMN}.issubset(engineered.columns):
+        sort_columns = ["지역", "범죄_유형", "연도"]
+        sorted_df = engineered.sort_values(sort_columns)
+        grouped = sorted_df.groupby(["지역", "범죄_유형"], sort=False)
+        prev_incidents = grouped[target_column].shift(1)
+        prev_rate = grouped[CRIME_RATE_COLUMN].shift(1)
+        engineered.loc[sorted_df.index, "전년도_발생_건수"] = prev_incidents.values
+        engineered.loc[sorted_df.index, "전년도_범죄율"] = prev_rate.values
+
+    engineered["전년도_발생_건수"] = engineered["전년도_발생_건수"].fillna(
+        pd.Series(fallback_key_values, index=engineered.index)
+    )
+    engineered["전년도_범죄율"] = engineered["전년도_범죄율"].fillna(0.0)
+    engineered["지역별_평균_발생_건수"] = engineered["지역별_평균_발생_건수"].fillna(global_mean)
+    engineered["범죄유형별_평균_발생_건수"] = engineered[
+        "범죄유형별_평균_발생_건수"
+    ].fillna(global_mean)
+
+    for column in ENGINEERED_FEATURE_COLUMNS:
+        engineered[column] = pd.to_numeric(engineered[column], errors="coerce").fillna(0.0)
+
+    return engineered
+
+
 def split_features_target(
     df: pd.DataFrame,
     feature_columns=None,
     target_column: str = DEFAULT_TARGET_COLUMN,
 ):
     if feature_columns is None:
-        feature_columns = DEFAULT_FEATURE_COLUMNS
+        feature_columns = DEFAULT_FEATURE_COLUMNS + [
+            column for column in ENGINEERED_FEATURE_COLUMNS if column in df.columns
+        ]
 
     missing_columns = [
         col for col in feature_columns + [target_column] if col not in df.columns

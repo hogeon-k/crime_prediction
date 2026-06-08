@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from ai.predict import DEFAULT_MODEL_PATH, predict, predict_one
+from ai.preprocessing import add_feature_engineering
 
 
 def make_sample_data():
@@ -30,6 +31,31 @@ class NegativePredictionModel:
     @staticmethod
     def predict(_X):
         return [-10.0]
+
+
+class SinglePredictionRangeModel:
+    feature_columns = [
+        "연도",
+        "인구수",
+        "전년도_발생_건수",
+        "전년도_범죄율",
+        "지역별_평균_발생_건수",
+        "범죄유형별_평균_발생_건수",
+        "지역_서울",
+        "범죄_유형_절도범죄",
+    ]
+    feature_engineering_stats = {
+        "global_mean_incidents": 100.0,
+        "region_mean_incidents": {"서울": 1000.0},
+        "crime_type_mean_incidents": {"절도범죄": 2000.0},
+        "region_crime_mean_incidents": {("서울", "절도범죄"): 5000.0},
+        "region_mean_population": {"서울": 10_000_000.0},
+        "region_population_bounds": {"서울": {"min": 9_000_000.0, "max": 10_000_000.0}},
+    }
+
+    @staticmethod
+    def predict(X):
+        return X["전년도_발생_건수"]
 
 
 def test_best_model_file_exists():
@@ -55,6 +81,35 @@ def test_predict_one():
     )
 
     assert isinstance(result, float)
+
+
+def test_predict_one_rejects_unrealistic_region_population():
+    with pytest.raises(ValueError, match="지역별 인구 범위"):
+        predict_one(
+            year=2026,
+            region="서울",
+            crime_type="절도",
+            population=1_000_000,
+            model=SinglePredictionRangeModel(),
+        )
+
+
+def test_prediction_fallback_incidents_scale_with_population():
+    df = pd.DataFrame(
+        {
+            "연도": [2026, 2026],
+            "지역": ["서울", "서울"],
+            "범죄_유형": ["절도범죄", "절도범죄"],
+            "인구수": [10_000_000, 5_000_000],
+        }
+    )
+
+    engineered = add_feature_engineering(
+        df,
+        stats=SinglePredictionRangeModel.feature_engineering_stats,
+    )
+
+    assert engineered["전년도_발생_건수"].tolist() == [5000.0, 2500.0]
 
 
 def test_negative_prediction_is_clipped_to_zero():

@@ -60,7 +60,7 @@ if pytest is not None:
     params = pytest.fixture(params)
 
 
-def test_params_conversion() -> GenerationParams:
+def assert_params_conversion() -> GenerationParams:
     print("===== 1. GUI input -> GenerationParams =====")
     params = get_user_input_gui(GUI_INPUT)
     assert params.validate(), "GenerationParams.validate() failed"
@@ -70,6 +70,10 @@ def test_params_conversion() -> GenerationParams:
     print(f"  region     : {params.region}")
     print("  PASS")
     return params
+
+
+def test_params_conversion() -> None:
+    assert_params_conversion()
 
 
 def test_raw_generation(params: GenerationParams) -> None:
@@ -159,7 +163,7 @@ def test_csv_export() -> None:
 
 
 def main() -> None:
-    params = test_params_conversion()
+    params = assert_params_conversion()
     test_raw_generation(params)
     test_pipeline(params)
     test_run_generation_pipeline()

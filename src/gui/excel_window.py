@@ -34,12 +34,12 @@ from services.dummy_generator import DataExporter
 from services.excel_pipeline import run_excel_pipeline
 
 STEP_MERGE = "\ub370\uc774\ud130 \ubcd1\ud569"
-C_CRIME = "\ubc94\uc8c4_\uc720\ud615"
-C_REGION = "\uc9c0\uc5ed"
-C_YEAR = "\uc5f0\ub3c4"
-C_INC = "\ubc1c\uc0dd_\uac74\uc218"
-C_POP = "\uc778\uad6c\uc218"
-C_RATE = "\ubc94\uc8c4\uc728"
+COL_CRIME = "\ubc94\uc8c4_\uc720\ud615"
+COL_REGION = "\uc9c0\uc5ed"
+COL_YEAR = "\uc5f0\ub3c4"
+COL_INCIDENTS = "\ubc1c\uc0dd_\uac74\uc218"
+COL_POP = "\uc778\uad6c\uc218"
+COL_RATE = "\ubc94\uc8c4\uc728"
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DATA_DIR = ROOT_DIR / "src" / "data"
 PREDICTION_OUTPUT_PATH = ROOT_DIR / "data" / "prediction_result.xlsx"
@@ -59,6 +59,8 @@ class ExcelWindow:
         self._df: pd.DataFrame | None = None
         self._crime_files: list[str] = []
         self._pop_files: list[str] = []
+        self._busy = False
+        self._action_buttons: list[tk.Button] = []
 
         self._build_ui()
 
@@ -175,15 +177,21 @@ class ExcelWindow:
 
         btn_frame = tk.Frame(inner, bg=PANEL_BG)
         btn_frame.pack(fill="x")
-        _btn(
+        self._process_btn = _btn(
             btn_frame,
             "\u25b6  \uc5c5\ub85c\ub4dc & \ucc98\ub9ac",
             self._on_process,
             bg=ACCENT,
-        ).pack(fill="x", pady=(0, 6))
-        _btn(btn_frame, "\U0001f4be  CSV \uc800\uc7a5", self._on_save, bg=SUCCESS).pack(
-            fill="x"
         )
+        self._process_btn.pack(fill="x", pady=(0, 6))
+        self._save_btn = _btn(
+            btn_frame,
+            "\U0001f4be  CSV \uc800\uc7a5",
+            self._on_save,
+            bg=SUCCESS,
+        )
+        self._save_btn.pack(fill="x")
+        self._action_buttons.extend([self._process_btn, self._save_btn])
 
         ttk.Separator(inner, orient="horizontal").pack(fill="x", pady=14)
         _label(inner, "저장된 AI 모델로 예측", font=FONT_BOLD).pack(
@@ -197,18 +205,21 @@ class ExcelWindow:
             wraplength=310,
             justify="left",
         ).pack(anchor="w", pady=(0, 6))
-        _btn(
+        self._predict_btn = _btn(
             inner,
             "🤖  저장된 모델로 예측 실행",
             self._on_predict_file,
             bg=ACCENT,
-        ).pack(fill="x", pady=(0, 6))
-        _btn(
+        )
+        self._predict_btn.pack(fill="x", pady=(0, 6))
+        self._sample_btn = _btn(
             inner,
             "예측 샘플 파일 생성",
             self._on_create_prediction_sample,
             bg=SUCCESS,
-        ).pack(fill="x", pady=(0, 6))
+        )
+        self._sample_btn.pack(fill="x", pady=(0, 6))
+        self._action_buttons.extend([self._predict_btn, self._sample_btn])
         _label(
             inner,
             f"\uacb0\uacfc: {PREDICTION_OUTPUT_PATH}",
@@ -313,23 +324,23 @@ class ExcelWindow:
 
     def _build_table(self, parent: tk.Frame) -> None:
         cols = [
-            C_CRIME,
-            C_REGION,
-            C_YEAR,
-            C_INC,
-            C_POP,
-            C_RATE,
+            COL_CRIME,
+            COL_REGION,
+            COL_YEAR,
+            COL_INCIDENTS,
+            COL_POP,
+            COL_RATE,
             PREDICTED_INCIDENTS_COLUMN,
             PREDICTED_RATE_COLUMN,
         ]
         self._tree = ttk.Treeview(parent, columns=cols, show="headings", height=10)
         widths = {
-            C_CRIME: 130,
-            C_REGION: 70,
-            C_YEAR: 55,
-            C_INC: 80,
-            C_POP: 90,
-            C_RATE: 75,
+            COL_CRIME: 130,
+            COL_REGION: 70,
+            COL_YEAR: 55,
+            COL_INCIDENTS: 80,
+            COL_POP: 90,
+            COL_RATE: 75,
             PREDICTED_INCIDENTS_COLUMN: 105,
             PREDICTED_RATE_COLUMN: 95,
         }
@@ -413,12 +424,16 @@ class ExcelWindow:
         )
 
     def _on_process(self) -> None:
+        if self._busy:
+            return
+
         params = self._build_params()
         errors = params.validation_errors()
         if errors:
             messagebox.showerror("\uc785\ub825 \uc624\ub958", "\n".join(errors))
             return
 
+        self._set_busy(True)
         self._set_status("\ucc98\ub9ac \uc911\u2026", TEXT_SEC)
         self._progress.start(12)
         self._clear_table()
@@ -442,6 +457,7 @@ class ExcelWindow:
 
     def _on_success(self) -> None:
         self._progress.stop()
+        self._set_busy(False)
         self._set_status("\u2705  \ucc98\ub9ac \uc644\ub8cc", SUCCESS)
         if self._df is not None:
             self._update_stats(self._df)
@@ -449,12 +465,20 @@ class ExcelWindow:
 
     def _on_fail(self, step: str, message: str) -> None:
         self._progress.stop()
+        self._set_busy(False)
         self._set_status(f"\u274c  \uc2e4\ud328: {step}", DANGER)
         messagebox.showerror(
             "\ucc98\ub9ac \uc2e4\ud328", f"\ub2e8\uacc4: {step}\n\n{message}"
         )
 
     def _on_save(self) -> None:
+        if self._busy:
+            messagebox.showwarning(
+                "처리 중",
+                "현재 작업이 끝난 뒤 저장하세요.",
+            )
+            return
+
         if self._df is None:
             messagebox.showwarning(
                 "\uc800\uc7a5 \ubd88\uac00",
@@ -481,6 +505,9 @@ class ExcelWindow:
             )
 
     def _on_predict_file(self) -> None:
+        if self._busy:
+            return
+
         path = filedialog.askopenfilename(
             filetypes=[
                 ("Excel/CSV", "*.xlsx *.xls *.csv"),
@@ -491,6 +518,7 @@ class ExcelWindow:
         if not path:
             return
 
+        self._set_busy(True)
         self._set_status("저장된 모델로 예측 중…", TEXT_SEC)
         self._progress.start(12)
         self._clear_table()
@@ -501,6 +529,13 @@ class ExcelWindow:
         ).start()
 
     def _on_create_prediction_sample(self) -> None:
+        if self._busy:
+            messagebox.showwarning(
+                "처리 중",
+                "현재 작업이 끝난 뒤 샘플 파일을 생성하세요.",
+            )
+            return
+
         try:
             SAMPLE_PREDICTION_INPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
             df = pd.DataFrame(
@@ -532,18 +567,12 @@ class ExcelWindow:
             self._df = df
             self.root.after(0, self._on_prediction_success)
         except FileNotFoundError as exc:
-            message = str(exc)
-            if "best_model.pkl" in message:
-                message = "먼저 src/ai/train.py를 실행해 모델을 생성하세요."
+            message = self._format_prediction_error(str(exc))
             self.root.after(
                 0, lambda m=message: self._on_fail("저장된 모델 예측", m)
             )
         except ValueError as exc:
-            message = str(exc)
-            if "예측에 필요한 컬럼" in message:
-                message = (
-                    f"{message}\n\n필수 컬럼: 연도, 지역, 범죄_유형, 인구수"
-                )
+            message = self._format_prediction_error(str(exc))
             self.root.after(
                 0, lambda m=message: self._on_fail("저장된 모델 예측", m)
             )
@@ -554,6 +583,7 @@ class ExcelWindow:
 
     def _on_prediction_success(self) -> None:
         self._progress.stop()
+        self._set_busy(False)
         self._set_status("✅  저장된 모델 예측 완료", SUCCESS)
         if self._df is not None:
             self._update_stats(self._df)
@@ -567,16 +597,44 @@ class ExcelWindow:
         self._status_var.set(msg)
         self._status_lbl.config(fg=color)
 
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        state = "disabled" if busy else "normal"
+        for button in self._action_buttons:
+            button.config(state=state)
+
+    @staticmethod
+    def _format_prediction_error(message: str) -> str:
+        if "best_model.pkl" in message:
+            return "먼저 src/ai/train.py를 실행해 모델을 생성하세요."
+
+        if "예측에 필요한 컬럼" in message:
+            return (
+                f"{message}\n\n"
+                "필수 컬럼: 연도, 지역, 범죄_유형, 인구수\n"
+                "예측 샘플 파일 생성 버튼으로 입력 양식을 확인할 수 있습니다."
+            )
+
+        if "학습 데이터에 없는 예측 입력값" in message:
+            return (
+                f"{message}\n\n"
+                "입력 파일의 지역/범죄_유형 값을 학습 데이터와 같은 이름으로 맞춰주세요.\n"
+                "예: 서울특별시는 서울로, 절도는 절도범죄로 자동 보정되지만 "
+                "학습에 전혀 없는 값은 예측할 수 없습니다."
+            )
+
+        return message
+
     def _update_stats(self, df: pd.DataFrame) -> None:
         self._stat_labels["rows"].config(text=f"{len(df):,} \ud589")
         self._stat_labels["cols"].config(text=f"{len(df.columns)} \uc5f4")
-        self._stat_labels["crime_types"].config(text=str(df[C_CRIME].nunique()))
-        self._stat_labels["regions"].config(text=str(df[C_REGION].nunique()))
-        years = sorted(df[C_YEAR].dropna().unique())
+        self._stat_labels["crime_types"].config(text=str(df[COL_CRIME].nunique()))
+        self._stat_labels["regions"].config(text=str(df[COL_REGION].nunique()))
+        years = sorted(df[COL_YEAR].dropna().unique())
         self._stat_labels["year_range"].config(
             text=f"{int(years[0])} ~ {int(years[-1])}" if len(years) else "\u2014"
         )
-        avg = df[C_RATE].mean() if C_RATE in df.columns else 0
+        avg = df[COL_RATE].mean() if COL_RATE in df.columns else 0
         self._stat_labels["crime_rate"].config(text=f"{avg:.2f}")
 
     def _clear_table(self) -> None:
@@ -597,12 +655,12 @@ class ExcelWindow:
         for i, row in enumerate(preview["data"]):
             tag = "even" if i % 2 == 0 else "odd"
             vals = [
-                row.get(C_CRIME, ""),
-                row.get(C_REGION, ""),
-                row.get(C_YEAR, ""),
-                _format_number(row.get(C_INC, "")),
-                _format_number(row.get(C_POP, "")),
-                _format_number(row.get(C_RATE, ""), digits=2),
+                row.get(COL_CRIME, ""),
+                row.get(COL_REGION, ""),
+                row.get(COL_YEAR, ""),
+                _format_number(row.get(COL_INCIDENTS, "")),
+                _format_number(row.get(COL_POP, "")),
+                _format_number(row.get(COL_RATE, ""), digits=2),
                 _format_number(row.get(PREDICTED_INCIDENTS_COLUMN, ""), digits=2),
                 _format_number(row.get(PREDICTED_RATE_COLUMN, ""), digits=2),
             ]

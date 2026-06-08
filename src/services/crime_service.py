@@ -44,9 +44,11 @@ _SIDO_SHORT: dict[str, str] = {
     "울산광역시": "울산",
     "세종특별자치시": "세종",
     "경기도": "경기",
+    "강원도": "강원",
     "강원특별자치도": "강원",
     "충청북도": "충북",
     "충청남도": "충남",
+    "전라북도": "전북",
     "전북특별자치도": "전북",
     "전라남도": "전남",
     "경상북도": "경북",
@@ -55,6 +57,7 @@ _SIDO_SHORT: dict[str, str] = {
 }
 
 _CRIME_SIDO_NAMES = tuple(_SIDO_SHORT.values())
+_EXCLUDED_CRIME_REGION_COLUMNS = {"기타도시", "도시이외"}
 
 
 def _read_csv_safe(file: str) -> pd.DataFrame:
@@ -104,7 +107,7 @@ def _normalize_upload_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.rename(columns=rename_map)
 
-    required = {"범죄_유형", "지역", "연도", "발생_건수"}
+    required = {"범죄_유형", "지역", "연도", "발생_건수", "인구수"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(
@@ -166,6 +169,13 @@ def _normalize_crime_region_to_sido(series: pd.Series) -> pd.Series:
     return normalized.map(to_sido)
 
 
+def _is_supported_crime_region_column(column: str) -> bool:
+    normalized = str(column).strip().replace(" ", "")
+    if normalized in _EXCLUDED_CRIME_REGION_COLUMNS:
+        return False
+    return not normalized.startswith("외국")
+
+
 class CrimeService:
 
     def __init__(self) -> None:
@@ -177,8 +187,6 @@ class CrimeService:
             raw = _read_file_safe(file_path)
             df = _normalize_upload_columns(raw)
             df["지역"] = _normalize_region(df["지역"])
-            if "인구수" not in df.columns:
-                df["인구수"] = pd.NA
             return ProcessResult(True, "업로드 로드 성공", df)
         except Exception as exc:
             return ProcessResult(False, f"업로드 로드 실패: {exc}")
@@ -199,6 +207,18 @@ class CrimeService:
                 on=["지역", "연도"],
                 how="left",
             )
+            missing_population = merged[merged["인구수"].isna()]
+            if not missing_population.empty:
+                examples = (
+                    missing_population[["지역", "연도"]]
+                    .drop_duplicates()
+                    .head(10)
+                    .to_dict(orient="records")
+                )
+                raise ValueError(
+                    "공공데이터 병합 후 인구수 결측이 발생했습니다. "
+                    f"범죄/인구 파일의 지역명 또는 연도를 확인하세요. 예시: {examples}"
+                )
             return ProcessResult(True, "병합 성공", merged)
 
         except Exception as exc:
@@ -221,7 +241,10 @@ class CrimeService:
             crime = _read_file_safe(file)
 
             region_cols = [
-                col for col in crime.columns if col not in ["범죄대분류", "범죄중분류"]
+                col
+                for col in crime.columns
+                if col not in ["범죄대분류", "범죄중분류"]
+                and _is_supported_crime_region_column(col)
             ]
 
             crime = crime.melt(

@@ -8,6 +8,7 @@ Run:
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 import _path_setup  # pylint: disable=unused-import
 from model.excel_model import UploadParams
@@ -53,6 +54,28 @@ def test_load_uploaded() -> None:
     print("  PASS")
 
 
+def test_load_uploaded_requires_population(tmp_path) -> None:
+    path = tmp_path / "missing_population.xlsx"
+    df = pd.DataFrame(
+        {
+            COL_CRIME: ["절도"],
+            COL_REGION: ["서울"],
+            COL_YEAR: [2024],
+            COL_INCIDENTS: [120],
+        }
+    )
+    df.to_excel(path, index=False, engine="openpyxl")
+
+    result = CrimeService().load_uploaded(str(path))
+
+    assert not result.success
+    assert COL_POP in result.message
+
+    params = UploadParams(mode="standard", standard_file=str(path))
+    with pytest.raises(ValueError, match=COL_POP):
+        run_excel_pipeline(params)
+
+
 def test_standard_pipeline() -> None:
     print("\n===== 2. run_excel_pipeline (standard) =====")
     path = _make_sample_xlsx()
@@ -71,6 +94,30 @@ def test_government_region_normalization() -> None:
     normalized = _normalize_crime_region_to_sido(regions)
     assert normalized.tolist() == ["서울", "서울", "서울", "경기"]
     print("  PASS")
+
+
+def test_government_merge_fails_when_population_missing(tmp_path) -> None:
+    crime_path = tmp_path / "crime_region_2024.csv"
+    pop_path = tmp_path / "pop_2024.csv"
+    pd.DataFrame(
+        {
+            "범죄대분류": ["재산범죄"],
+            "범죄중분류": ["절도범죄"],
+            "서울": [120],
+        }
+    ).to_csv(crime_path, index=False, encoding="utf-8-sig")
+    pd.DataFrame(
+        {
+            "시도명": ["부산광역시"],
+            "통계년월": [202401],
+            "계": [3_300_000],
+        }
+    ).to_csv(pop_path, index=False, encoding="utf-8-sig")
+
+    result = CrimeService().load_and_merge([str(crime_path)], [str(pop_path)])
+
+    assert not result.success
+    assert "인구수 결측" in result.message
 
 
 def test_government_pipeline_if_data_exists() -> None:

@@ -7,7 +7,7 @@ if str(SRC_DIR) not in sys.path:
 
 import pandas as pd
 
-from ai.train import print_train_report, train_and_evaluate
+from ai.train import RANDOM_FOREST_CANDIDATES, print_train_report, train_and_evaluate
 
 
 def make_sample_data():
@@ -29,13 +29,25 @@ def test_train_and_evaluate():
     df = make_sample_data()
     output = train_and_evaluate(df)
 
-    assert set(output["models"]) == {"linear", "random_forest", "xgboost"}
-    assert set(output["results"]) == {"linear", "random_forest", "xgboost"}
+    expected_models = {"linear", "xgboost", *RANDOM_FOREST_CANDIDATES}
+
+    assert set(output["models"]) == expected_models
+    assert set(output["results"]) == expected_models
     assert output["best_name"] in output["models"]
     assert output["best_model"] is output["models"][output["best_name"]]
 
     for item in output["results"].values():
         assert set(item["metrics"]) == {"mse", "rmse", "mae", "r2"}
+        assert set(item["prediction_diversity"]) == {
+            "row_count",
+            "unique_count",
+            "unique_ratio",
+            "min",
+            "max",
+            "mean",
+            "std",
+            "top_values",
+        }
 
 
 def main():

@@ -24,7 +24,7 @@ def run_excel_pipeline(
     if params.mode == "standard":
         result = service.load_uploaded(params.standard_file)
         if not result.success:
-            raise RuntimeError(result.message)
+            raise ValueError(result.message)
         vm.process_from_df(result.data)
     else:
         vm.process(

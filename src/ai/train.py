@@ -4,6 +4,8 @@ import pickle
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 SRC_DIR = Path(__file__).resolve().parents[1]
 ROOT_DIR = SRC_DIR.parent
 MODEL_DIR = ROOT_DIR / "models"
@@ -20,6 +22,8 @@ from ai.preprocessing import (
     DEFAULT_TARGET_COLUMN,
     DEFAULT_TEST_YEAR,
     DEFAULT_TRAIN_YEARS,
+    add_feature_engineering,
+    build_feature_engineering_stats,
     split_train_test,
 )
 from ai.random_forest.random_forest import RandomForestRegressorModel
@@ -28,21 +32,60 @@ from model.excel_model import UploadParams
 from services.excel_pipeline import run_excel_pipeline
 
 
+RANDOM_FOREST_CANDIDATES = {
+    "random_forest_current": {
+        "n_estimators": 10,
+        "max_depth": 5,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+    },
+    "random_forest_depth_8": {
+        "n_estimators": 100,
+        "max_depth": 8,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+    },
+    "random_forest_depth_12": {
+        "n_estimators": 100,
+        "max_depth": 12,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+    },
+    "random_forest_depth_12_leaf_2": {
+        "n_estimators": 100,
+        "max_depth": 12,
+        "min_samples_split": 4,
+        "min_samples_leaf": 2,
+    },
+    "random_forest_depth_16_leaf_2": {
+        "n_estimators": 150,
+        "max_depth": 16,
+        "min_samples_split": 4,
+        "min_samples_leaf": 2,
+    },
+}
+
+
 def create_models():
-    return {
+    models = {
         "linear": LinearRegressionModel(learning_rate=1e-16),
-        "random_forest": RandomForestRegressorModel(),
         "xgboost": XGBoostRegressorModel(),
     }
 
+    for model_name, params in RANDOM_FOREST_CANDIDATES.items():
+        models[model_name] = RandomForestRegressorModel(**params)
 
-def train_models(X_train, y_train):
+    return models
+
+
+def train_models(X_train, y_train, feature_engineering_stats=None):
     models = create_models()
     feature_columns = list(X_train.columns)
 
     for model in models.values():
         model.fit(X_train, y_train)
         model.feature_columns = feature_columns
+        model.feature_engineering_stats = feature_engineering_stats
 
     return models
 
@@ -55,9 +98,38 @@ def evaluate_models(models, X_test, y_test):
         results[model_name] = {
             "model": model,
             "metrics": ModelEvaluator.evaluate(y_test, y_pred),
+            "prediction_diversity": prediction_diversity_summary(y_pred),
         }
 
     return results
+
+
+def prediction_diversity_summary(y_pred, top_n=5):
+    series = pd.Series(y_pred, dtype=float)
+    value_counts = series.value_counts(dropna=False)
+    top_values = []
+
+    for value, count in value_counts.head(top_n).items():
+        top_values.append(
+            {
+                "value": float(value),
+                "count": int(count),
+                "ratio": float(count / len(series)) if len(series) else 0.0,
+            }
+        )
+
+    return {
+        "row_count": int(len(series)),
+        "unique_count": int(series.nunique(dropna=False)),
+        "unique_ratio": float(series.nunique(dropna=False) / len(series))
+        if len(series)
+        else 0.0,
+        "min": float(series.min()) if len(series) else None,
+        "max": float(series.max()) if len(series) else None,
+        "mean": float(series.mean()) if len(series) else None,
+        "std": float(series.std(ddof=0)) if len(series) else None,
+        "top_values": top_values,
+    }
 
 
 def _sorted_years(values):
@@ -68,7 +140,11 @@ def train_and_evaluate(df):
     print("\n========== 전체 데이터 연도 분포 ==========")
     print(df["연도"].value_counts().sort_index())
 
-    X_train, X_test, y_train, y_test = split_train_test(df)
+    train_source_df = df[df["연도"].isin(DEFAULT_TRAIN_YEARS)]
+    feature_engineering_stats = build_feature_engineering_stats(train_source_df)
+    engineered_df = add_feature_engineering(df, stats=feature_engineering_stats)
+
+    X_train, X_test, y_train, y_test = split_train_test(engineered_df)
 
     train_years = _sorted_years(X_train["연도"].unique())
     test_years = _sorted_years(X_test["연도"].unique())
@@ -84,7 +160,11 @@ def train_and_evaluate(df):
         "Test가 2024만으로 구성되지 않음"
     )
 
-    models = train_models(X_train, y_train)
+    models = train_models(
+        X_train,
+        y_train,
+        feature_engineering_stats=feature_engineering_stats,
+    )
     results = evaluate_models(models, X_test, y_test)
     best_name, best_result = ModelEvaluator.compare(results)
 
@@ -95,11 +175,45 @@ def train_and_evaluate(df):
         "best_model": best_result["model"],
         "train_years": train_years,
         "test_years": test_years,
+        "feature_columns": list(X_train.columns),
+        "feature_engineering": {
+            "enabled": True,
+            "columns": [
+                "전년도_발생_건수",
+                "전년도_범죄율",
+                "지역별_평균_발생_건수",
+                "범죄유형별_평균_발생_건수",
+            ],
+        },
     }
 
 
 def print_train_report(results):
     ModelEvaluator.print_report(results)
+    print_prediction_diversity_report(results)
+
+
+def print_prediction_diversity_report(results):
+    print("\n========== 예측 다양성 분석 ==========")
+
+    for name, item in results.items():
+        diversity = item.get("prediction_diversity", {})
+        top_values = diversity.get("top_values", [])
+
+        print(f"\n[{name}]")
+        print(f"예측 행 수       : {diversity.get('row_count')}")
+        print(f"고유 예측값 수   : {diversity.get('unique_count')}")
+        print(f"고유 예측값 비율 : {diversity.get('unique_ratio', 0):.4f}")
+        print(f"min / max        : {diversity.get('min')} / {diversity.get('max')}")
+        print(f"mean / std       : {diversity.get('mean')} / {diversity.get('std')}")
+
+        if top_values:
+            print("가장 많이 반복되는 예측값:")
+            for row in top_values:
+                print(
+                    f"  {row['value']:.6f} -> {row['count']}행 "
+                    f"({row['ratio']:.2%})"
+                )
 
 
 def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PATH):
@@ -120,6 +234,11 @@ def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PAT
     model_info = {
         "best_model": best_name,
         "metrics": {name: float(value) for name, value in metrics.items()},
+        "prediction_diversity": output["results"][best_name][
+            "prediction_diversity"
+        ],
+        "feature_columns": output["feature_columns"],
+        "feature_engineering": output["feature_engineering"],
         "train_years": output["train_years"],
         "test_years": output["test_years"],
         "target_column": DEFAULT_TARGET_COLUMN,

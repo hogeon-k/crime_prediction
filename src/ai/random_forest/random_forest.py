@@ -18,12 +18,14 @@ class RandomForestRegressorModel:
         n_estimators=10,
         max_depth=5,
         min_samples_split=2,
+        min_samples_leaf=1,
         max_features=None,
         random_state=42,
     ):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
         self.max_features = max_features
         self.random_state = random_state
 
@@ -43,6 +45,7 @@ class RandomForestRegressorModel:
             tree = DecisionTreeRegressor(
                 max_depth=self.max_depth,
                 min_samples_split=self.min_samples_split,
+                min_samples_leaf=self.min_samples_leaf,
                 max_features=self.max_features,
             )
 
@@ -85,6 +88,7 @@ class RandomForestRegressorModel:
             "n_estimators": self.n_estimators,
             "max_depth": self.max_depth,
             "min_samples_split": self.min_samples_split,
+            "min_samples_leaf": self.min_samples_leaf,
             "max_features": self.max_features,
             "random_state": self.random_state,
             "trees": self.trees,
@@ -98,6 +102,7 @@ class RandomForestRegressorModel:
         self.n_estimators = state["n_estimators"]
         self.max_depth = state["max_depth"]
         self.min_samples_split = state["min_samples_split"]
+        self.min_samples_leaf = state.get("min_samples_leaf", 1)
         self.max_features = state["max_features"]
         self.random_state = state["random_state"]
         self.trees = state["trees"]

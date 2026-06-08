@@ -144,6 +144,27 @@ def test_predict_from_dataframe_does_not_force_same_prediction(monkeypatch):
     assert result_df[PREDICTED_INCIDENTS_COLUMN].nunique() > 1
 
 
+def test_predict_from_dataframe_rejects_unknown_categories(monkeypatch):
+    import ai.predict as predict_module
+
+    monkeypatch.setattr(
+        predict_module,
+        "load_best_model",
+        lambda model_path=predict_module.DEFAULT_MODEL_PATH: DummyPredictionModel(),
+    )
+    df = pd.DataFrame(
+        {
+            "연도": [2025],
+            "지역": ["화성시"],
+            "범죄_유형": ["신종범죄"],
+            "인구수": [900000],
+        }
+    )
+
+    with pytest.raises(ValueError, match="학습 데이터에 없는 예측 입력값"):
+        predict_from_dataframe(df)
+
+
 def test_predict_debug_prints_diagnostics(monkeypatch):
     import ai.predict as predict_module
 

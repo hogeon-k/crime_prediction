@@ -10,14 +10,18 @@ ROOT_DIR = SRC_DIR.parent
 DEFAULT_MODEL_PATH = ROOT_DIR / "models" / "best_model.pkl"
 PREDICTED_INCIDENTS_COLUMN = "예측_발생_건수"
 PREDICTED_RATE_COLUMN = "예측_범죄율"
+POPULATION_RANGE_TOLERANCE = 0.5
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from ai.preprocessing import (
     DEFAULT_FEATURE_COLUMNS,
+    ENGINEERED_FEATURE_COLUMNS,
+    add_feature_engineering,
     encode_features,
     normalize_prediction_features,
+    unknown_prediction_categories,
 )
 
 
@@ -41,8 +45,25 @@ def prepare_prediction_features(model, X):
     encoded_columns = getattr(model, "feature_columns", None)
 
     if set(DEFAULT_FEATURE_COLUMNS).issubset(X.columns):
-        X = X[DEFAULT_FEATURE_COLUMNS]
         X = normalize_prediction_features(X, encoded_columns=encoded_columns)
+        unknown_categories = unknown_prediction_categories(
+            X,
+            encoded_columns=encoded_columns,
+        )
+        if unknown_categories:
+            raise ValueError(
+                "학습 데이터에 없는 예측 입력값이 있습니다: "
+                f"{unknown_categories}. 입력값을 학습 데이터의 지역/범죄_유형과 맞춰주세요."
+            )
+        if getattr(model, "feature_engineering_stats", None) is not None:
+            X = add_feature_engineering(
+                X,
+                stats=getattr(model, "feature_engineering_stats", None),
+            )
+        feature_columns = DEFAULT_FEATURE_COLUMNS + [
+            column for column in ENGINEERED_FEATURE_COLUMNS if column in X.columns
+        ]
+        X = X[feature_columns]
 
     return encode_features(X, encoded_columns=encoded_columns)
 
@@ -135,6 +156,20 @@ def _print_prediction_distribution(predictions, debug_printer=print):
     debug_printer(f"예측_발생_건수 unique 개수: {series.nunique(dropna=False)}")
 
 
+def _print_prediction_file_summary(predictions, debug_printer=print):
+    series = pd.Series(predictions, dtype=float)
+    value_counts = series.value_counts(dropna=False)
+
+    debug_printer("\n========== prediction_result.xlsx 예측 다양성 ==========")
+    debug_printer(f"예측 행 수: {len(series)}")
+    debug_printer(f"예측_발생_건수 고유값 수: {series.nunique(dropna=False)}")
+    debug_printer("가장 많이 반복되는 예측값:")
+
+    for value, count in value_counts.head(5).items():
+        ratio = count / len(series) if len(series) else 0.0
+        debug_printer(f"  {float(value):.6f} -> {int(count)}행 ({ratio:.2%})")
+
+
 def _print_similar_prediction_groups(raw_X, predictions, debug_printer=print):
     if predictions is None or not isinstance(raw_X, pd.DataFrame):
         return
@@ -216,6 +251,41 @@ def _clip_negative_predictions(predictions):
     return [max(0.0, float(value)) for value in predictions]
 
 
+def _validate_single_prediction_population(model, X):
+    stats = getattr(model, "feature_engineering_stats", None)
+    if not stats:
+        return
+
+    bounds_by_region = stats.get("region_population_bounds", {})
+    if not bounds_by_region:
+        return
+
+    encoded_columns = getattr(model, "feature_columns", None)
+    normalized = normalize_prediction_features(X, encoded_columns=encoded_columns)
+    region = normalized.iloc[0]["지역"]
+    population = float(normalized.iloc[0]["인구수"])
+    bounds = bounds_by_region.get(region)
+
+    if not bounds:
+        return
+
+    trained_min = float(bounds["min"])
+    trained_max = float(bounds["max"])
+    allowed_min = trained_min * POPULATION_RANGE_TOLERANCE
+    allowed_max = trained_max * (1 + POPULATION_RANGE_TOLERANCE)
+
+    if allowed_min <= population <= allowed_max:
+        return
+
+    raise ValueError(
+        "입력 인구수가 학습 데이터의 지역별 인구 범위를 크게 벗어났습니다: "
+        f"지역={region}, 입력 인구수={population:,.0f}, "
+        f"학습 인구수 범위={trained_min:,.0f}~{trained_max:,.0f}, "
+        f"허용 범위={allowed_min:,.0f}~{allowed_max:,.0f}. "
+        "단일 예측은 현실적인 지역 인구수를 입력해야 범죄율이 과대 계산되지 않습니다."
+    )
+
+
 def predict(*args, model_path=DEFAULT_MODEL_PATH, debug=False, debug_printer=print):
     if len(args) == 1:
         model = load_best_model(model_path)
@@ -266,6 +336,7 @@ def predict_one(
         }
     )
 
+    _validate_single_prediction_population(model, X)
     prediction = predict(model, X)
 
     return float(prediction[0])
@@ -283,7 +354,7 @@ def predict_from_dataframe(df, debug=False, debug_printer=print):
 
     result_df = df.copy()
     predicted_incidents = predict(
-        result_df[DEFAULT_FEATURE_COLUMNS],
+        result_df,
         debug=debug,
         debug_printer=debug_printer,
     )
@@ -291,6 +362,7 @@ def predict_from_dataframe(df, debug=False, debug_printer=print):
     result_df[PREDICTED_RATE_COLUMN] = (
         result_df[PREDICTED_INCIDENTS_COLUMN] / result_df["인구수"] * 100000
     )
+    _print_prediction_file_summary(predicted_incidents, debug_printer=debug_printer)
 
     return result_df
 

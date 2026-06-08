@@ -24,9 +24,16 @@ class DecisionTreeRegressor:
     - leaf 값은 y 평균
     """
 
-    def __init__(self, max_depth=5, min_samples_split=2, max_features=None):
+    def __init__(
+        self,
+        max_depth=5,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        max_features=None,
+    ):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
         self.max_features = max_features
         self.root = None
 
@@ -50,6 +57,7 @@ class DecisionTreeRegressor:
         if (
             depth >= self.max_depth
             or n_samples < self.min_samples_split
+            or n_samples <= self.min_samples_leaf
             or len(np.unique(y)) == 1
         ):
             return TreeNode(value=np.mean(y))
@@ -100,6 +108,12 @@ class DecisionTreeRegressor:
                 right_idx = X[:, feature_index] > threshold
 
                 if left_idx.sum() == 0 or right_idx.sum() == 0:
+                    continue
+
+                if (
+                    left_idx.sum() < self.min_samples_leaf
+                    or right_idx.sum() < self.min_samples_leaf
+                ):
                     continue
 
                 score = self._weighted_mse(
