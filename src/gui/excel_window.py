@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import os
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import pandas as pd
 
+from ai.predict import (
+    PREDICTED_INCIDENTS_COLUMN,
+    PREDICTED_RATE_COLUMN,
+    predict_from_file,
+)
 from gui.crime_generator_window import (
     ACCENT,
     BG,
@@ -35,6 +40,10 @@ C_YEAR = "\uc5f0\ub3c4"
 C_INC = "\ubc1c\uc0dd_\uac74\uc218"
 C_POP = "\uc778\uad6c\uc218"
 C_RATE = "\ubc94\uc8c4\uc728"
+ROOT_DIR = Path(__file__).resolve().parents[2]
+SRC_DATA_DIR = ROOT_DIR / "src" / "data"
+PREDICTION_OUTPUT_PATH = ROOT_DIR / "data" / "prediction_result.xlsx"
+SAMPLE_PREDICTION_INPUT_PATH = ROOT_DIR / "data" / "sample_prediction_input.xlsx"
 
 
 class ExcelWindow:
@@ -58,7 +67,7 @@ class ExcelWindow:
         hdr.pack(fill="x")
         tk.Label(
             hdr,
-            text="\U0001f4ca  Excel / CSV \ud559\uc2b5 \ub370\uc774\ud130 \uc5c5\ub85c\ub4dc",
+            text="📊  Excel / CSV 데이터 처리 및 저장 모델 예측",
             font=("\ub9d1\uc740 \uace0\ub515", 13, "bold"),
             fg="white",
             bg=ACCENT,
@@ -147,7 +156,7 @@ class ExcelWindow:
         path_row = tk.Frame(inner, bg=PANEL_BG)
         path_row.pack(fill="x")
         self._path_var = tk.StringVar(
-            value=os.path.join(os.getcwd(), "processed_crime_data.csv")
+            value=str(SRC_DATA_DIR / "processed_crime_data.csv")
         )
         ttk.Entry(path_row, textvariable=self._path_var, font=FONT_SMALL).pack(
             side="left", fill="x", expand=True
@@ -175,6 +184,38 @@ class ExcelWindow:
         _btn(btn_frame, "\U0001f4be  CSV \uc800\uc7a5", self._on_save, bg=SUCCESS).pack(
             fill="x"
         )
+
+        ttk.Separator(inner, orient="horizontal").pack(fill="x", pady=14)
+        _label(inner, "저장된 AI 모델로 예측", font=FONT_BOLD).pack(
+            anchor="w", pady=(0, 4)
+        )
+        _label(
+            inner,
+            "CSV/XLSX 파일의 연도, 지역, 범죄_유형, 인구수 컬럼으로 "
+            "best_model.pkl 추론만 실행합니다.",
+            fg=TEXT_SEC,
+            wraplength=310,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        _btn(
+            inner,
+            "🤖  저장된 모델로 예측 실행",
+            self._on_predict_file,
+            bg=ACCENT,
+        ).pack(fill="x", pady=(0, 6))
+        _btn(
+            inner,
+            "예측 샘플 파일 생성",
+            self._on_create_prediction_sample,
+            bg=SUCCESS,
+        ).pack(fill="x", pady=(0, 6))
+        _label(
+            inner,
+            f"\uacb0\uacfc: {PREDICTION_OUTPUT_PATH}",
+            fg=TEXT_SEC,
+            wraplength=310,
+            justify="left",
+        ).pack(anchor="w")
 
         self._on_mode_change()
 
@@ -271,7 +312,16 @@ class ExcelWindow:
         self._build_table(p_inner)
 
     def _build_table(self, parent: tk.Frame) -> None:
-        cols = [C_CRIME, C_REGION, C_YEAR, C_INC, C_POP, C_RATE]
+        cols = [
+            C_CRIME,
+            C_REGION,
+            C_YEAR,
+            C_INC,
+            C_POP,
+            C_RATE,
+            PREDICTED_INCIDENTS_COLUMN,
+            PREDICTED_RATE_COLUMN,
+        ]
         self._tree = ttk.Treeview(parent, columns=cols, show="headings", height=10)
         widths = {
             C_CRIME: 130,
@@ -280,6 +330,8 @@ class ExcelWindow:
             C_INC: 80,
             C_POP: 90,
             C_RATE: 75,
+            PREDICTED_INCIDENTS_COLUMN: 105,
+            PREDICTED_RATE_COLUMN: 95,
         }
         for c in cols:
             self._tree.heading(c, text=c)
@@ -341,6 +393,7 @@ class ExcelWindow:
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
             filetypes=[("CSV", "*.csv")],
+            initialdir=str(SRC_DATA_DIR),
             initialfile="processed_crime_data.csv",
         )
         if path:
@@ -415,6 +468,7 @@ class ExcelWindow:
                 "\uc800\uc7a5 \uacbd\ub85c\ub97c \uc785\ub825\ud558\uc138\uc694.",
             )
             return
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         ok = DataExporter.save_to_csv(self._df, path)
         if ok:
             messagebox.showinfo(
@@ -425,6 +479,89 @@ class ExcelWindow:
                 "\uc800\uc7a5 \uc2e4\ud328",
                 f"\ud30c\uc77c \uc800\uc7a5\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4:\n{path}",
             )
+
+    def _on_predict_file(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[
+                ("Excel/CSV", "*.xlsx *.xls *.csv"),
+                ("Excel", "*.xlsx *.xls"),
+                ("CSV", "*.csv"),
+            ]
+        )
+        if not path:
+            return
+
+        self._set_status("저장된 모델로 예측 중…", TEXT_SEC)
+        self._progress.start(12)
+        self._clear_table()
+        threading.Thread(
+            target=self._run_prediction,
+            args=(path,),
+            daemon=True,
+        ).start()
+
+    def _on_create_prediction_sample(self) -> None:
+        try:
+            SAMPLE_PREDICTION_INPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            df = pd.DataFrame(
+                {
+                    "연도": [2025, 2025, 2025, 2025, 2025],
+                    "지역": ["서울", "부산", "대구", "인천", "광주"],
+                    "범죄_유형": ["절도", "폭력", "강도", "사기", "강도"],
+                    "인구수": [9000000, 3300000, 2400000, 2950000, 1400000],
+                }
+            )
+            df.to_excel(
+                SAMPLE_PREDICTION_INPUT_PATH,
+                index=False,
+                engine="openpyxl",
+            )
+            messagebox.showinfo(
+                "예측 샘플 파일 생성 완료",
+                f"샘플 파일을 저장했습니다:\n{SAMPLE_PREDICTION_INPUT_PATH}",
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "예측 샘플 파일 생성 실패",
+                f"샘플 파일을 만들 수 없습니다:\n{exc}",
+            )
+
+    def _run_prediction(self, input_path: str) -> None:
+        try:
+            df = predict_from_file(input_path, PREDICTION_OUTPUT_PATH)
+            self._df = df
+            self.root.after(0, self._on_prediction_success)
+        except FileNotFoundError as exc:
+            message = str(exc)
+            if "best_model.pkl" in message:
+                message = "먼저 src/ai/train.py를 실행해 모델을 생성하세요."
+            self.root.after(
+                0, lambda m=message: self._on_fail("저장된 모델 예측", m)
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "예측에 필요한 컬럼" in message:
+                message = (
+                    f"{message}\n\n필수 컬럼: 연도, 지역, 범죄_유형, 인구수"
+                )
+            self.root.after(
+                0, lambda m=message: self._on_fail("저장된 모델 예측", m)
+            )
+        except Exception as exc:
+            self.root.after(
+                0, lambda m=str(exc): self._on_fail("저장된 모델 예측", m)
+            )
+
+    def _on_prediction_success(self) -> None:
+        self._progress.stop()
+        self._set_status("✅  저장된 모델 예측 완료", SUCCESS)
+        if self._df is not None:
+            self._update_stats(self._df)
+            self._populate_table(self._df)
+        messagebox.showinfo(
+            "저장된 모델 예측 완료",
+            f"\uacb0\uacfc \ud30c\uc77c\uc744 \uc800\uc7a5\ud588\uc2b5\ub2c8\ub2e4:\n{PREDICTION_OUTPUT_PATH}",
+        )
 
     def _set_status(self, msg: str, color: str = TEXT_PRI) -> None:
         self._status_var.set(msg)
@@ -449,15 +586,25 @@ class ExcelWindow:
     def _populate_table(self, df: pd.DataFrame) -> None:
         self._clear_table()
         preview = DataExporter.preview(df, rows=10)
+
+        def _format_number(value, digits: int | None = None) -> str:
+            if value == "" or pd.isna(value):
+                return ""
+            if digits is None:
+                return f"{value:,.0f}"
+            return f"{value:,.{digits}f}"
+
         for i, row in enumerate(preview["data"]):
             tag = "even" if i % 2 == 0 else "odd"
             vals = [
                 row.get(C_CRIME, ""),
                 row.get(C_REGION, ""),
                 row.get(C_YEAR, ""),
-                f"{row.get(C_INC, 0):,}",
-                f"{row.get(C_POP, 0):,}",
-                f"{row.get(C_RATE, 0):.2f}",
+                _format_number(row.get(C_INC, "")),
+                _format_number(row.get(C_POP, "")),
+                _format_number(row.get(C_RATE, ""), digits=2),
+                _format_number(row.get(PREDICTED_INCIDENTS_COLUMN, ""), digits=2),
+                _format_number(row.get(PREDICTED_RATE_COLUMN, ""), digits=2),
             ]
             self._tree.insert("", "end", values=vals, tags=(tag,))
         self._tree.tag_configure("even", background="#F9FAFB")

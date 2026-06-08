@@ -33,7 +33,7 @@ _COLUMN_ALIASES: dict[str, list[str]] = {
 }
 
 # 인구 CSV 시도명(전체) → 범죄 CSV 시도명(약칭) 매핑
-#    예: '서울특별시' → '서울', '강원특별자치도' → '강원도'
+#    예: '서울특별시' → '서울', '강원특별자치도' → '강원'
 _SIDO_SHORT: dict[str, str] = {
     "서울특별시": "서울",
     "부산광역시": "부산",
@@ -42,9 +42,9 @@ _SIDO_SHORT: dict[str, str] = {
     "광주광역시": "광주",
     "대전광역시": "대전",
     "울산광역시": "울산",
-    "세종특별자치시": "세종시",
-    "경기도": "경기도",
-    "강원특별자치도": "강원도",
+    "세종특별자치시": "세종",
+    "경기도": "경기",
+    "강원특별자치도": "강원",
     "충청북도": "충북",
     "충청남도": "충남",
     "전북특별자치도": "전북",
@@ -53,6 +53,8 @@ _SIDO_SHORT: dict[str, str] = {
     "경상남도": "경남",
     "제주특별자치도": "제주",
 }
+
+_CRIME_SIDO_NAMES = tuple(_SIDO_SHORT.values())
 
 
 def _read_csv_safe(file: str) -> pd.DataFrame:
@@ -146,6 +148,24 @@ def _normalize_region(series: pd.Series) -> pd.Series:
     return series.astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
 
 
+def _normalize_crime_region_to_sido(series: pd.Series) -> pd.Series:
+    """범죄 파일의 시도/시군구 혼합 지역명을 시도 단위로 통일합니다."""
+    normalized = _normalize_region(series)
+
+    def to_sido(region: str) -> str:
+        compact = region.replace(" ", "")
+        for sido in _CRIME_SIDO_NAMES:
+            if (
+                region == sido
+                or region.startswith(f"{sido} ")
+                or compact.startswith(sido)
+            ):
+                return sido
+        return region
+
+    return normalized.map(to_sido)
+
+
 class CrimeService:
 
     def __init__(self) -> None:
@@ -189,9 +209,10 @@ class CrimeService:
         범죄 CSV를 읽어 시도 단위 long-format으로 변환합니다.
 
         연도별 집계 단위 차이 처리:
-        - 2022·2023: 시도 단위 컬럼 ('서울', '부산', ...)
-        - 2024     : 시군구 단위 컬럼 ('서울 종로구', '서울 중구', ...)
-                     → 시도 단위로 합산하여 연도 간 통일
+        - 2022: 시도/일부 시군구 혼합 컬럼 ('서울', '경기 고양', ...)
+        - 2023: 시군구 단위 컬럼 ('서울종로구', '서울중구', ...)
+        - 2024: 시군구 단위 컬럼 ('서울 종로구', '서울 중구', ...)
+                → 시도 단위로 합산하여 연도 간 통일
         """
         frames: list[pd.DataFrame] = []
 
@@ -213,17 +234,14 @@ class CrimeService:
             crime = crime[~crime["지역"].str.startswith("외국")].copy()
             crime["범죄_유형"] = crime["범죄중분류"]
             crime["연도"] = year
-            crime["지역"] = _normalize_region(crime["지역"])
+            crime["지역"] = _normalize_crime_region_to_sido(crime["지역"])
             crime["발생_건수"] = pd.to_numeric(crime["발생_건수"], errors="coerce")
 
-            # 시군구 단위(공백 포함) → 시도만 추출 후 합산
-            if " " in region_cols[0]:
-                crime["지역"] = crime["지역"].str.split(" ").str[0]
-                crime = pd.DataFrame(
-                    crime.groupby(["범죄_유형", "지역", "연도"], as_index=False)[
-                        "발생_건수"
-                    ].sum()
-                )
+            crime = pd.DataFrame(
+                crime.groupby(["범죄_유형", "지역", "연도"], as_index=False)[
+                    "발생_건수"
+                ].sum()
+            )
 
             frames.append(crime[["범죄_유형", "지역", "연도", "발생_건수"]])
 

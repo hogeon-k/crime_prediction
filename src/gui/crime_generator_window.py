@@ -85,7 +85,7 @@ def _btn(parent, text, command, bg=ACCENT, fg="white", font=None, **kw):
 class CrimeGeneratorWindow:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("데이터 자동 생성")
+        self.root.title("더미 범죄 데이터 생성")
         self.root.geometry("960x720")
         self.root.configure(bg=BG)
         self.root.resizable(True, True)
@@ -104,7 +104,7 @@ class CrimeGeneratorWindow:
         hdr.pack(fill="x")
         tk.Label(
             hdr,
-            text="🗂  범죄 데이터 자동 생성기",
+            text="🗂  더미 범죄 데이터 생성기",
             font=("맑은 고딕", 13, "bold"),
             fg="white",
             bg=ACCENT,
@@ -132,7 +132,17 @@ class CrimeGeneratorWindow:
         inner = tk.Frame(card, bg=PANEL_BG, padx=16, pady=14)
         inner.pack(fill="both", expand=True)
 
-        _label(inner, "생성 설정", font=FONT_TITLE).pack(anchor="w", pady=(0, 12))
+        _label(inner, "더미 데이터 생성 설정", font=FONT_TITLE).pack(
+            anchor="w", pady=(0, 6)
+        )
+        _label(
+            inner,
+            "테스트와 시연에 사용할 샘플 범죄 데이터를 만듭니다. "
+            "저장된 AI 모델 예측은 Excel/CSV 업로드 창에서 실행하세요.",
+            fg=TEXT_SEC,
+            wraplength=300,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
 
         # 데이터 수
         self._build_spinbox_row(inner, "데이터 수", "data_count", 1, 10000, 500)
@@ -157,11 +167,16 @@ class CrimeGeneratorWindow:
         btn_frame = tk.Frame(inner, bg=PANEL_BG)
         btn_frame.pack(fill="x")
 
-        _btn(btn_frame, "▶  데이터 생성 & 처리", self._on_generate, bg=ACCENT).pack(
-            fill="x", pady=(0, 6)
-        )
+        _btn(
+            btn_frame,
+            "▶  더미 데이터 생성 & 전처리",
+            self._on_generate,
+            bg=ACCENT,
+        ).pack(fill="x", pady=(0, 6))
 
-        _btn(btn_frame, "💾  CSV 저장", self._on_save, bg=SUCCESS).pack(fill="x")
+        _btn(btn_frame, "💾  더미 CSV 저장", self._on_save, bg=SUCCESS).pack(
+            fill="x"
+        )
 
     def _build_spinbox_row(
         self,
@@ -256,7 +271,9 @@ class CrimeGeneratorWindow:
         ).pack(side="left")
 
     def _build_save_path_row(self, parent: tk.Frame) -> None:
-        _label(parent, "저장 경로", fg=TEXT_SEC).pack(anchor="w", pady=(0, 4))
+        _label(parent, "더미 데이터 CSV 저장 경로", fg=TEXT_SEC).pack(
+            anchor="w", pady=(0, 4)
+        )
 
         row = tk.Frame(parent, bg=PANEL_BG)
         row.pack(fill="x")
@@ -392,7 +409,7 @@ class CrimeGeneratorWindow:
             messagebox.showerror("유효성 오류", "\n".join(errors))
             return
 
-        self._set_status("생성 중…", TEXT_SEC)
+        self._set_status("더미 데이터 생성 및 전처리 중…", TEXT_SEC)
         self._progress.start(12)
         self._clear_table()
 
@@ -415,7 +432,7 @@ class CrimeGeneratorWindow:
                     lambda: self._on_fail(vm.state.failed_step, vm.state.error_message),
                 )
         except Exception as exc:
-            self.root.after(0, lambda: self._on_fail("생성", str(exc)))
+            self.root.after(0, lambda: self._on_fail("더미 데이터 생성", str(exc)))
 
     def _on_state_update(self, state: CrimeState) -> None:
         if state.status == ProcessStatus.RUNNING:
@@ -424,9 +441,14 @@ class CrimeGeneratorWindow:
 
     def _on_success(self) -> None:
         self._progress.stop()
-        self._set_status("✅  처리 완료", SUCCESS)
+        self._set_status("✅  더미 데이터 생성 완료", SUCCESS)
         self._update_stats(self._df)
         self._populate_table(self._df)
+        messagebox.showinfo(
+            "더미 데이터 생성 완료",
+            "샘플 데이터가 생성되어 미리보기에 표시되었습니다.\n\n"
+            f"CSV 저장 버튼을 누르면 아래 경로에 저장됩니다:\n{self._path_var.get().strip()}",
+        )
 
     def _on_fail(self, step: str, message: str) -> None:
         self._progress.stop()
@@ -435,7 +457,7 @@ class CrimeGeneratorWindow:
 
     def _on_save(self) -> None:
         if self._df is None:
-            messagebox.showwarning("저장 불가", "먼저 데이터를 생성하세요.")
+            messagebox.showwarning("저장 불가", "먼저 더미 데이터를 생성하세요.")
             return
         path = self._path_var.get().strip()
         if not path:
@@ -444,7 +466,7 @@ class CrimeGeneratorWindow:
 
         ok = DataExporter.save_to_csv(self._df, path)
         if ok:
-            messagebox.showinfo("저장 완료", f"저장 완료:\n{path}")
+            messagebox.showinfo("더미 CSV 저장 완료", f"저장 완료:\n{path}")
         else:
             messagebox.showerror("저장 실패", f"파일 저장에 실패했습니다:\n{path}")
 
