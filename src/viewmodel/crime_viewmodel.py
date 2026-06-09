@@ -13,6 +13,7 @@ from services.ai_service import AIService
 from services.crime_service import CrimeService
 from services.dummy_generator import DataExporter
 from services.excel_pipeline import run_excel_pipeline
+from services.statistics_service import StatisticsService
 
 
 class CrimeViewModel:
@@ -22,10 +23,12 @@ class CrimeViewModel:
         callback: Callable[[CrimeState], None],
         service: CrimeService | None = None,
         ai_service: AIService | None = None,
+        statistics_service: StatisticsService | None = None,
     ) -> None:
         self._callback = callback
         self._service = service or CrimeService()
         self._ai_service = ai_service or AIService()
+        self._statistics_service = statistics_service or StatisticsService()
         self.state = CrimeState()
 
     def process(
@@ -182,6 +185,26 @@ class CrimeViewModel:
 
     def save_dataframe(self, df: pd.DataFrame, path: str):
         return DataExporter.save_to_csv(df, path)
+
+    def get_prediction_summary(self) -> dict[str, float | int | None]:
+        if self.state.final_data is None:
+            return {}
+        return self._statistics_service.prediction_summary(self.state.final_data)
+
+    def get_region_chart_data(self) -> list[dict[str, float | str]]:
+        if self.state.final_data is None:
+            return []
+        return self._statistics_service.group_by_region(self.state.final_data)
+
+    def get_crime_type_chart_data(self) -> list[dict[str, float | str]]:
+        if self.state.final_data is None:
+            return []
+        return self._statistics_service.group_by_crime_type(self.state.final_data)
+
+    def get_top_rate_chart_data(self) -> list[dict[str, float | str]]:
+        if self.state.final_data is None:
+            return []
+        return self._statistics_service.top_region_by_crime_rate(self.state.final_data)
 
     def _replace_state(self, state: CrimeState) -> None:
         self.state = state

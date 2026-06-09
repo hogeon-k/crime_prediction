@@ -64,6 +64,7 @@ class ExcelWindow:
         self._busy = False
         self._action_buttons: list[tk.Button] = []
         self._viewmodel = CrimeViewModel(callback=self._on_state_update)
+        self._chart_canvases = []
 
         self._build_ui()
 
@@ -313,6 +314,9 @@ class ExcelWindow:
         for key, title in [
             ("rows", "\ucd1d \ud589\uc218"),
             ("cols", "\uc5f4 \uc218"),
+            ("avg_predicted_incidents", "평균 예측 건수"),
+            ("max_predicted_incidents", "최대 예측 건수"),
+            ("avg_predicted_rate", "평균 예측 범죄율"),
             ("crime_types", "\ubc94\uc8c4 \uc720\ud615"),
             ("regions", "\uc9c0\uc5ed \uc218"),
             ("year_range", "\uc5f0\ub3c4 \ubc94\uc704"),
@@ -333,6 +337,20 @@ class ExcelWindow:
             p_inner, "\ubbf8\ub9ac\ubcf4\uae30 (\uc0c1\uc704 10\ud589)", font=FONT_BOLD
         ).pack(anchor="w", pady=(0, 6))
         self._build_table(p_inner)
+
+        chart_card = _card(parent)
+        chart_card.pack(fill="both", expand=True, pady=(8, 0))
+        c_inner = tk.Frame(chart_card, bg=PANEL_BG, padx=14, pady=10)
+        c_inner.pack(fill="both", expand=True)
+        _label(c_inner, "그래프", font=FONT_BOLD).pack(anchor="w", pady=(0, 6))
+        self._chart_notebook = ttk.Notebook(c_inner)
+        self._chart_notebook.pack(fill="both", expand=True)
+        self._region_chart_frame = tk.Frame(self._chart_notebook, bg=PANEL_BG)
+        self._crime_chart_frame = tk.Frame(self._chart_notebook, bg=PANEL_BG)
+        self._rate_chart_frame = tk.Frame(self._chart_notebook, bg=PANEL_BG)
+        self._chart_notebook.add(self._region_chart_frame, text="지역별")
+        self._chart_notebook.add(self._crime_chart_frame, text="범죄 유형별")
+        self._chart_notebook.add(self._rate_chart_frame, text="범죄율 TOP 10")
 
     def _build_table(self, parent: tk.Frame) -> None:
         cols = [
@@ -477,6 +495,7 @@ class ExcelWindow:
         self._set_status("\u2705  \ucc98\ub9ac \uc644\ub8cc", SUCCESS)
         if self._df is not None:
             self._update_stats(self._df)
+            self._update_charts()
             self._populate_table(self._df)
 
     def _on_fail(self, step: str, message: str) -> None:
@@ -605,6 +624,7 @@ class ExcelWindow:
         self._set_status("✅  저장된 모델 예측 완료", SUCCESS)
         if self._df is not None:
             self._update_stats(self._df)
+            self._update_charts()
             self._populate_table(self._df)
         messagebox.showinfo(
             "저장된 모델 예측 완료",
@@ -626,16 +646,88 @@ class ExcelWindow:
         return AIService.format_prediction_error(message)
 
     def _update_stats(self, df: pd.DataFrame) -> None:
-        self._stat_labels["rows"].config(text=f"{len(df):,} \ud589")
-        self._stat_labels["cols"].config(text=f"{len(df.columns)} \uc5f4")
-        self._stat_labels["crime_types"].config(text=str(df[COL_CRIME].nunique()))
-        self._stat_labels["regions"].config(text=str(df[COL_REGION].nunique()))
-        years = sorted(df[COL_YEAR].dropna().unique())
-        self._stat_labels["year_range"].config(
-            text=f"{int(years[0])} ~ {int(years[-1])}" if len(years) else "\u2014"
+        summary = self._viewmodel.get_prediction_summary()
+
+        def _fmt(value, digits: int = 2) -> str:
+            if value is None:
+                return "\u2014"
+            return f"{float(value):,.{digits}f}"
+
+        self._stat_labels["rows"].config(text=f"{summary.get('row_count', 0):,} \ud589")
+        self._stat_labels["cols"].config(text=f"{summary.get('column_count', 0):,} \uc5f4")
+        self._stat_labels["avg_predicted_incidents"].config(
+            text=_fmt(summary.get("avg_predicted_incidents"))
         )
-        avg = df[COL_RATE].mean() if COL_RATE in df.columns else 0
-        self._stat_labels["crime_rate"].config(text=f"{avg:.2f}")
+        self._stat_labels["max_predicted_incidents"].config(
+            text=_fmt(summary.get("max_predicted_incidents"))
+        )
+        self._stat_labels["avg_predicted_rate"].config(
+            text=_fmt(summary.get("avg_predicted_rate"))
+        )
+        self._stat_labels["crime_types"].config(text=str(summary.get("crime_type_count", 0)))
+        self._stat_labels["regions"].config(text=str(summary.get("region_count", 0)))
+        year_min = summary.get("year_min")
+        year_max = summary.get("year_max")
+        self._stat_labels["year_range"].config(
+            text=f"{year_min} ~ {year_max}" if year_min is not None and year_max is not None else "\u2014"
+        )
+        self._stat_labels["crime_rate"].config(text=_fmt(summary.get("avg_predicted_rate")))
+
+    def _update_charts(self) -> None:
+        self._draw_bar_chart(
+            self._region_chart_frame,
+            self._viewmodel.get_region_chart_data(),
+            "지역별 예측 발생 건수",
+        )
+        self._draw_bar_chart(
+            self._crime_chart_frame,
+            self._viewmodel.get_crime_type_chart_data(),
+            "범죄 유형별 예측 발생 건수",
+        )
+        self._draw_bar_chart(
+            self._rate_chart_frame,
+            self._viewmodel.get_top_rate_chart_data(),
+            "예측 범죄율 TOP 10",
+        )
+
+    def _draw_bar_chart(
+        self,
+        parent: tk.Frame,
+        rows: list[dict[str, float | str]],
+        title: str,
+    ) -> None:
+        for widget in parent.winfo_children():
+            widget.destroy()
+
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+        except Exception as exc:
+            _label(parent, f"그래프를 표시하려면 matplotlib이 필요합니다: {exc}", fg=DANGER).pack(
+                anchor="w"
+            )
+            return
+
+        if not rows:
+            _label(parent, "표시할 데이터가 없습니다.", fg=TEXT_SEC).pack(anchor="w")
+            return
+
+        limited_rows = rows[:10]
+        labels = [str(row["label"]) for row in limited_rows]
+        values = [float(row["value"]) for row in limited_rows]
+
+        fig = Figure(figsize=(5.8, 2.8), dpi=100)
+        ax = fig.add_subplot(111)
+        ax.bar(labels, values, color=ACCENT)
+        ax.set_title(title)
+        ax.tick_params(axis="x", rotation=35, labelsize=8)
+        ax.tick_params(axis="y", labelsize=8)
+        fig.tight_layout()
+
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._chart_canvases.append(canvas)
 
     def _clear_table(self) -> None:
         for item in self._tree.get_children():
