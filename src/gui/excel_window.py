@@ -702,6 +702,7 @@ class ExcelWindow:
         try:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from matplotlib.figure import Figure
+            from matplotlib import font_manager
         except Exception as exc:
             _label(parent, f"그래프를 표시하려면 matplotlib이 필요합니다: {exc}", fg=DANGER).pack(
                 anchor="w"
@@ -715,13 +716,21 @@ class ExcelWindow:
         limited_rows = rows[:10]
         labels = [str(row["label"]) for row in limited_rows]
         values = [float(row["value"]) for row in limited_rows]
+        font_path = Path("C:/Windows/Fonts/malgun.ttf")
+        font_properties = (
+            font_manager.FontProperties(fname=str(font_path))
+            if font_path.exists()
+            else None
+        )
 
         fig = Figure(figsize=(5.8, 2.8), dpi=100)
         ax = fig.add_subplot(111)
         ax.bar(labels, values, color=ACCENT)
-        ax.set_title(title)
+        ax.set_title(title, fontproperties=font_properties)
         ax.tick_params(axis="x", rotation=35, labelsize=8)
         ax.tick_params(axis="y", labelsize=8)
+        for label in ax.get_xticklabels() + ax.get_yticklabels():
+            label.set_fontproperties(font_properties)
         fig.tight_layout()
 
         canvas = FigureCanvasTkAgg(fig, master=parent)

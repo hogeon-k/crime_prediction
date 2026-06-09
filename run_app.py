@@ -415,6 +415,8 @@ class FilePredictionTab(BaseTab):
         super().__init__(parent, app)
         self.input_var = tk.StringVar()
         self.target_year_var = tk.IntVar(value=2025)
+        self.stat_labels: dict[str, tk.Label] = {}
+        self._chart_canvases = []
         self._build()
 
     def _build(self) -> None:
@@ -442,6 +444,23 @@ class FilePredictionTab(BaseTab):
         body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         inner = tk.Frame(body, bg=PANEL_BG, padx=14, pady=10)
         inner.pack(fill="both", expand=True)
+
+        stats = tk.Frame(inner, bg=PANEL_BG)
+        stats.pack(fill="x", pady=(0, 8))
+        for key, title in [
+            ("avg_predicted_incidents", "평균 예측 발생 건수"),
+            ("max_predicted_incidents", "최대 예측 발생 건수"),
+            ("avg_predicted_rate", "평균 예측 범죄율"),
+            ("region_count", "지역 수"),
+            ("crime_type_count", "범죄 유형 수"),
+        ]:
+            item = tk.Frame(stats, bg=PANEL_BG)
+            item.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            _label(item, title, fg=TEXT_SEC).pack(anchor="w")
+            value_label = _label(item, "\u2014", font=FONT_BOLD, fg=TEXT_PRI)
+            value_label.pack(anchor="w")
+            self.stat_labels[key] = value_label
+
         self.tree = self.make_table(
             inner,
             [
@@ -454,6 +473,17 @@ class FilePredictionTab(BaseTab):
                 PREDICTED_RATE_COLUMN,
             ],
         )
+
+        chart_frame = tk.Frame(inner, bg=PANEL_BG)
+        chart_frame.pack(fill="both", expand=True, pady=(10, 0))
+        self.chart_notebook = ttk.Notebook(chart_frame)
+        self.chart_notebook.pack(fill="both", expand=True)
+        self.region_chart_frame = tk.Frame(self.chart_notebook, bg=PANEL_BG)
+        self.crime_chart_frame = tk.Frame(self.chart_notebook, bg=PANEL_BG)
+        self.rate_chart_frame = tk.Frame(self.chart_notebook, bg=PANEL_BG)
+        self.chart_notebook.add(self.region_chart_frame, text="지역별")
+        self.chart_notebook.add(self.crime_chart_frame, text="범죄 유형별")
+        self.chart_notebook.add(self.rate_chart_frame, text="범죄율 TOP 10")
 
     def _browse_input(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Excel/CSV", "*.xlsx *.xls *.csv")])
@@ -480,6 +510,8 @@ class FilePredictionTab(BaseTab):
         df = self.viewmodel.predict_file(path, str(PREDICTION_OUTPUT_PATH), target_year=target_year)
         if df is not None:
             self.root.after(0, self._show_dataframe, df)
+            self.root.after(0, self._show_statistics)
+            self.root.after(0, self._show_charts)
             self.log(f"파일 예측 완료: {PREDICTION_OUTPUT_PATH}")
             self.root.after(0, lambda: messagebox.showinfo("예측 완료", f"결과 저장:\n{PREDICTION_OUTPUT_PATH}"))
         else:
@@ -504,6 +536,91 @@ class FilePredictionTab(BaseTab):
                     self.format_number(row.get(PREDICTED_RATE_COLUMN, ""), 2),
                 ],
             )
+
+    def _show_statistics(self) -> None:
+        summary = self.viewmodel.get_prediction_summary()
+
+        def fmt(value, digits: int = 2) -> str:
+            if value is None:
+                return "\u2014"
+            return f"{float(value):,.{digits}f}"
+
+        self.stat_labels["avg_predicted_incidents"].config(
+            text=fmt(summary.get("avg_predicted_incidents"))
+        )
+        self.stat_labels["max_predicted_incidents"].config(
+            text=fmt(summary.get("max_predicted_incidents"))
+        )
+        self.stat_labels["avg_predicted_rate"].config(
+            text=fmt(summary.get("avg_predicted_rate"))
+        )
+        self.stat_labels["region_count"].config(text=str(summary.get("region_count", 0)))
+        self.stat_labels["crime_type_count"].config(text=str(summary.get("crime_type_count", 0)))
+
+    def _show_charts(self) -> None:
+        self._draw_bar_chart(
+            self.region_chart_frame,
+            self.viewmodel.get_region_chart_data(),
+            "지역별 예측 발생 건수",
+        )
+        self._draw_bar_chart(
+            self.crime_chart_frame,
+            self.viewmodel.get_crime_type_chart_data(),
+            "범죄 유형별 예측 발생 건수",
+        )
+        self._draw_bar_chart(
+            self.rate_chart_frame,
+            self.viewmodel.get_top_rate_chart_data(),
+            "예측 범죄율 TOP 10",
+        )
+
+    def _draw_bar_chart(
+        self,
+        parent: tk.Frame,
+        rows: list[dict[str, float | str]],
+        title: str,
+    ) -> None:
+        for widget in parent.winfo_children():
+            widget.destroy()
+
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+            from matplotlib import font_manager
+        except Exception as exc:
+            _label(parent, f"그래프를 표시하려면 matplotlib이 필요합니다: {exc}", fg=DANGER).pack(
+                anchor="w"
+            )
+            return
+
+        if not rows:
+            _label(parent, "표시할 데이터가 없습니다.", fg=TEXT_SEC).pack(anchor="w")
+            return
+
+        limited_rows = rows[:10]
+        labels = [str(row["label"]) for row in limited_rows]
+        values = [float(row["value"]) for row in limited_rows]
+        font_path = Path("C:/Windows/Fonts/malgun.ttf")
+        font_properties = (
+            font_manager.FontProperties(fname=str(font_path))
+            if font_path.exists()
+            else None
+        )
+
+        fig = Figure(figsize=(7.5, 2.8), dpi=100)
+        ax = fig.add_subplot(111)
+        ax.bar(labels, values, color=ACCENT)
+        ax.set_title(title, fontproperties=font_properties)
+        ax.tick_params(axis="x", rotation=35, labelsize=8)
+        ax.tick_params(axis="y", labelsize=8)
+        for label in ax.get_xticklabels() + ax.get_yticklabels():
+            label.set_fontproperties(font_properties)
+        fig.tight_layout()
+
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._chart_canvases.append(canvas)
 
     def _open_result(self) -> None:
         if not PREDICTION_OUTPUT_PATH.exists():
