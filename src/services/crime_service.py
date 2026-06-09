@@ -3,11 +3,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from openpyxl import load_workbook
 import pandas as pd
 
 from model.excel_model import ProcessResult, ValidationRule
 
 _ENCODINGS = ("utf-8-sig", "euc-kr", "cp949")
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024
+MAX_UPLOAD_ROWS = 100_000
+MAX_EXCEL_SHEETS = 1
 
 # 업로드 파일 컬럼 별칭 → 표준 컬럼명
 _COLUMN_ALIASES: dict[str, list[str]] = {
@@ -60,12 +65,78 @@ _CRIME_SIDO_NAMES = tuple(_SIDO_SHORT.values())
 _EXCLUDED_CRIME_REGION_COLUMNS = {"기타도시", "도시이외"}
 
 
+def _validate_upload_path(path: Path, allowed_roots: list[Path] | None = None) -> Path:
+    """업로드 파일 경로가 읽을 수 있는 로컬 파일인지 확인한다."""
+    resolved = path.expanduser().resolve()
+
+    if not resolved.exists():
+        raise ValueError(f"파일을 찾을 수 없습니다: {path}")
+    if not resolved.is_file():
+        raise ValueError(f"파일이 아닌 경로는 업로드할 수 없습니다: {path}")
+
+    if allowed_roots:
+        resolved_roots = [root.expanduser().resolve() for root in allowed_roots]
+        if not any(resolved == root or root in resolved.parents for root in resolved_roots):
+            raise ValueError(f"허용되지 않은 경로의 파일입니다: {path}")
+
+    return resolved
+
+
+def _validate_file_size(path: Path) -> None:
+    size = path.stat().st_size
+    if size > MAX_UPLOAD_SIZE_BYTES:
+        limit_mb = MAX_UPLOAD_SIZE_BYTES / 1024 / 1024
+        raise ValueError(f"파일 크기가 너무 큽니다: {size:,} bytes (최대 {limit_mb:.0f}MB)")
+
+
+def _validate_extension(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
+        raise ValueError(f"지원하지 않는 파일 형식입니다: {suffix}\n지원 형식: {allowed}")
+    return suffix
+
+
+def _validate_row_limit(df: pd.DataFrame, file: str) -> None:
+    if len(df) > MAX_UPLOAD_ROWS:
+        raise ValueError(
+            f"업로드 행 수가 너무 많습니다: {len(df):,}행 "
+            f"(최대 {MAX_UPLOAD_ROWS:,}행): {file}"
+        )
+
+
+def _validate_excel_workbook(path: Path) -> None:
+    if path.suffix.lower() != ".xlsx":
+        return
+
+    workbook = load_workbook(path, read_only=False, data_only=False)
+    try:
+        if len(workbook.sheetnames) > MAX_EXCEL_SHEETS:
+            raise ValueError(
+                f"Excel sheet 수가 너무 많습니다: {len(workbook.sheetnames)}개 "
+                f"(최대 {MAX_EXCEL_SHEETS}개)"
+            )
+
+        for worksheet in workbook.worksheets:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if cell.data_type == "f":
+                        raise ValueError(
+                            f"수식 셀은 업로드할 수 없습니다: "
+                            f"{worksheet.title}!{cell.coordinate}"
+                        )
+    finally:
+        workbook.close()
+
+
 def _read_csv_safe(file: str) -> pd.DataFrame:
     """인코딩을 순차적으로 시도하며 CSV를 읽어 반환"""
     last_error: Exception = ValueError("알 수 없는 오류")
     for enc in _ENCODINGS:
         try:
-            return pd.read_csv(file, encoding=enc)
+            df = pd.read_csv(file, encoding=enc)
+            _validate_row_limit(df, file)
+            return df
         except UnicodeDecodeError as e:
             last_error = e
             continue
@@ -76,19 +147,19 @@ def _read_csv_safe(file: str) -> pd.DataFrame:
 
 def _read_file_safe(file: str) -> pd.DataFrame:
     """CSV 또는 Excel 파일을 읽어 반환"""
-    path = Path(file)
-    if not path.exists():
-        raise ValueError(f"파일을 찾을 수 없습니다: {file}")
+    path = _validate_upload_path(Path(file))
+    _validate_file_size(path)
+    suffix = _validate_extension(path)
 
-    suffix = path.suffix.lower()
     if suffix in (".xlsx", ".xls"):
-        return pd.read_excel(file, engine="openpyxl")
+        _validate_excel_workbook(path)
+        df = pd.read_excel(path, engine="openpyxl" if suffix == ".xlsx" else None)
+        _validate_row_limit(df, file)
+        return df
     if suffix == ".csv":
-        return _read_csv_safe(file)
-    raise ValueError(
-        f"지원하지 않는 파일 형식입니다: {suffix}\n"
-        "지원 형식: .csv, .xlsx, .xls"
-    )
+        return _read_csv_safe(str(path))
+
+    raise ValueError(f"지원하지 않는 파일 형식입니다: {suffix}")
 
 
 def _normalize_upload_columns(df: pd.DataFrame) -> pd.DataFrame:

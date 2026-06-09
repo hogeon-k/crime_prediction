@@ -12,7 +12,7 @@ from ai.predict import (
     PREDICTED_RATE_COLUMN,
     predict_from_file,
 )
-from gui.crime_generator_window import (
+from gui.widgets import (
     ACCENT,
     BG,
     BORDER,
@@ -25,9 +25,9 @@ from gui.crime_generator_window import (
     SUCCESS,
     TEXT_PRI,
     TEXT_SEC,
-    _btn,
-    _card,
-    _label,
+    button as _btn,
+    card as _card,
+    label as _label,
 )
 from model.excel_model import CrimeState, ProcessStatus, UploadParams
 from services.dummy_generator import DataExporter
@@ -493,15 +493,15 @@ class ExcelWindow:
             )
             return
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        ok = DataExporter.save_to_csv(self._df, path)
-        if ok:
+        result = DataExporter.save_to_csv(self._df, path)
+        if result:
             messagebox.showinfo(
                 "\uc800\uc7a5 \uc644\ub8cc", f"\uc800\uc7a5 \uc644\ub8cc:\n{path}"
             )
         else:
             messagebox.showerror(
                 "\uc800\uc7a5 \uc2e4\ud328",
-                f"\ud30c\uc77c \uc800\uc7a5\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4:\n{path}",
+                result.message,
             )
 
     def _on_predict_file(self) -> None:

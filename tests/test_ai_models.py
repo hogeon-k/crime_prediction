@@ -1,10 +1,3 @@
-import sys
-from pathlib import Path
-
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
 import pandas as pd
 
 from ai.train import RANDOM_FOREST_CANDIDATES, print_train_report, train_and_evaluate
@@ -33,11 +26,17 @@ def test_train_and_evaluate():
 
     assert set(output["models"]) == expected_models
     assert set(output["results"]) == expected_models
+    assert output["baseline"]["name"] == "baseline_2023_same_region_crime"
     assert output["best_name"] in output["models"]
-    assert output["best_model"] is output["models"][output["best_name"]]
+    assert output["best_ai_name"] in output["models"]
+    assert output["final_saved_model"] in output["models"]
+    assert output["final_saved_model"] == "random_forest_depth_8"
+    assert output["best_model"] is output["models"][output["final_saved_model"]]
+    assert output["best_is_baseline"] is False
+    assert output["selection_reason"]
 
     for item in output["results"].values():
-        assert set(item["metrics"]) == {"mse", "rmse", "mae", "r2"}
+        assert set(item["metrics"]) == {"mse", "rmse", "mae", "smape", "r2"}
         assert set(item["prediction_diversity"]) == {
             "row_count",
             "unique_count",

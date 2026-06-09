@@ -1,5 +1,10 @@
 {
   "best_model": "random_forest_depth_8",
+  "best_baseline": "baseline_2023_same_region_crime",
+  "best_ai_model": "random_forest_depth_8",
+  "final_saved_model": "random_forest_depth_8",
+  "model_file": "best_model.pkl",
+  "model_sha256": "24cd5fef6568dfd42112d78e9ccb2d3aafa2da15d014bef01297c813d36f903c",
   "metrics": {
     "mse": 3856673.7345963065,
     "rmse": 1963.8415757377952,
@@ -128,5 +133,24 @@
   "test_years": [
     2024
   ],
-  "target_column": "발생_건수"
+  "target_column": "발생_건수",
+  "selection_reason": [
+    "Best balance among AI models.",
+    "Strong test performance across R2, RMSE, and MAE.",
+    "random_forest_depth_8 was selected as the final deployable AI model.",
+    "Robust ablation performance without previous-year features: R2 drop=0.0310, RMSE increase=468.6362, MAE increase=83.1958.",
+    "Better prediction diversity: unique ratio=0.6966."
+  ],
+  "selection_warning": [
+    "Baseline outperformed all AI models.",
+    "However, project requires saving one AI model.",
+    "random_forest_depth_8 was selected as the most balanced deployable AI model."
+  ],
+  "baseline_outperformed_ai": true,
+  "baseline_metrics": {
+    "mse": 3004541.609366258,
+    "rmse": 1733.361361449556,
+    "mae": 569.0593602929195,
+    "r2": 0.9547552060984686
+  }
 }

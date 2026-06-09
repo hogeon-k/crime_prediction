@@ -20,7 +20,7 @@ from ai.predict import (  # noqa: E402
     predict_from_file,
     predict_one,
 )
-from gui.crime_generator_window import (  # noqa: E402
+from gui.widgets import (  # noqa: E402
     ACCENT,
     BG,
     BORDER,
@@ -34,9 +34,9 @@ from gui.crime_generator_window import (  # noqa: E402
     SUCCESS,
     TEXT_PRI,
     TEXT_SEC,
-    _btn,
-    _card,
-    _label,
+    button as _btn,
+    card as _card,
+    label as _label,
 )
 from gui.excel_window import ExcelWindow  # noqa: E402
 from model.excel_model import UploadParams  # noqa: E402
@@ -245,11 +245,12 @@ class DataGenerationTab(BaseTab):
             messagebox.showwarning("경로 없음", "저장 경로를 입력하세요.")
             return
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        if DataExporter.save_to_csv(self._df, path):
+        result = DataExporter.save_to_csv(self._df, path)
+        if result:
             self.log(f"더미 CSV 저장 완료: {path}")
             messagebox.showinfo("저장 완료", path)
         else:
-            messagebox.showerror("저장 실패", path)
+            messagebox.showerror("저장 실패", result.message)
 
 
 class UploadPreprocessTab(BaseTab):
@@ -404,11 +405,12 @@ class UploadPreprocessTab(BaseTab):
             messagebox.showwarning("경로 없음", "저장 경로를 입력하세요.")
             return
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        if DataExporter.save_to_csv(self._df, path):
+        result = DataExporter.save_to_csv(self._df, path)
+        if result:
             self.log(f"전처리 CSV 저장 완료: {path}")
             messagebox.showinfo("저장 완료", path)
         else:
-            messagebox.showerror("저장 실패", path)
+            messagebox.showerror("저장 실패", result.message)
 
 
 class FilePredictionTab(BaseTab):

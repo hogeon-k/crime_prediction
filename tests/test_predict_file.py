@@ -1,10 +1,3 @@
-import sys
-from pathlib import Path
-
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
 import pandas as pd
 import pytest
 
@@ -29,11 +22,41 @@ def make_prediction_data():
     )
 
 
-def test_predict_from_dataframe_adds_prediction_columns():
+class BasicFilePredictionModel:
+    feature_columns = ["연도", "인구수"]
+
+    def predict(self, X):
+        return X["인구수"] / 100000
+
+
+@pytest.mark.integration
+def test_best_model_file_exists_for_integration():
     assert DEFAULT_MODEL_PATH.exists(), (
         "models/best_model.pkl이 없습니다. 먼저 python src/ai/train.py를 실행하세요."
     )
 
+
+@pytest.mark.integration
+def test_predict_from_dataframe_with_saved_model():
+    result_df = predict_from_dataframe(make_prediction_data())
+
+    assert PREDICTED_INCIDENTS_COLUMN in result_df.columns
+    assert PREDICTED_RATE_COLUMN in result_df.columns
+    assert len(result_df) == 3
+
+
+def _use_basic_model(monkeypatch):
+    import ai.predict as predict_module
+
+    monkeypatch.setattr(
+        predict_module,
+        "load_best_model",
+        lambda model_path=predict_module.DEFAULT_MODEL_PATH: BasicFilePredictionModel(),
+    )
+
+
+def test_predict_from_dataframe_adds_prediction_columns(monkeypatch):
+    _use_basic_model(monkeypatch)
     result_df = predict_from_dataframe(make_prediction_data())
 
     assert PREDICTED_INCIDENTS_COLUMN in result_df.columns
@@ -46,7 +69,8 @@ def test_predict_from_dataframe_adds_prediction_columns():
     ).all()
 
 
-def test_predict_from_file_csv(tmp_path):
+def test_predict_from_file_csv(tmp_path, monkeypatch):
+    _use_basic_model(monkeypatch)
     input_path = tmp_path / "input.csv"
     output_path = tmp_path / "output.csv"
     make_prediction_data().to_csv(input_path, index=False, encoding="utf-8-sig")
@@ -60,7 +84,8 @@ def test_predict_from_file_csv(tmp_path):
     assert len(result_df) == len(saved_df)
 
 
-def test_predict_from_file_xlsx(tmp_path):
+def test_predict_from_file_xlsx(tmp_path, monkeypatch):
+    _use_basic_model(monkeypatch)
     input_path = tmp_path / "input.xlsx"
     output_path = tmp_path / "output.xlsx"
     make_prediction_data().to_excel(input_path, index=False, engine="openpyxl")

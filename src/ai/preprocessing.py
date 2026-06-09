@@ -1,10 +1,30 @@
+from dataclasses import dataclass
+
 import pandas as pd
 
-DEFAULT_FEATURE_COLUMNS = ["연도", "지역", "범죄_유형", "인구수"]
-DEFAULT_TARGET_COLUMN = "발생_건수"
-DEFAULT_TRAIN_YEARS = (2022, 2023)
-DEFAULT_TEST_YEAR = 2024
-CRIME_RATE_COLUMN = "범죄율"
+from constants import (
+    COL_CRIME_RATE,
+    COL_CRIME_TYPE,
+    COL_INCIDENTS,
+    COL_POPULATION,
+    COL_REGION,
+    COL_YEAR,
+    DEFAULT_FEATURE_COLUMNS,
+    DEFAULT_TARGET_COLUMN,
+)
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    train_years: tuple[int, ...] = (2022, 2023)
+    test_year: int = 2024
+    valid_years: tuple[int, ...] = tuple(range(2020, 2027))
+
+
+DEFAULT_TRAINING_CONFIG = TrainingConfig()
+DEFAULT_TRAIN_YEARS = DEFAULT_TRAINING_CONFIG.train_years
+DEFAULT_TEST_YEAR = DEFAULT_TRAINING_CONFIG.test_year
+CRIME_RATE_COLUMN = COL_CRIME_RATE
 ENGINEERED_FEATURE_COLUMNS = [
     "전년도_발생_건수",
     "전년도_범죄율",
@@ -165,12 +185,22 @@ def encode_features(
     return encoded_X
 
 
+def fit_feature_encoder(X: pd.DataFrame) -> list[str]:
+    """학습 데이터에만 one-hot encoder 컬럼 목록을 맞춘다."""
+    return list(encode_features(X).columns)
+
+
+def transform_features(X: pd.DataFrame, encoded_columns: list[str]) -> pd.DataFrame:
+    """학습 데이터에서 fit한 컬럼 구조로 입력 데이터를 변환한다."""
+    return encode_features(X, encoded_columns=encoded_columns)
+
+
 def build_feature_engineering_stats(
     df: pd.DataFrame,
     target_column: str = DEFAULT_TARGET_COLUMN,
 ) -> dict:
     population_column = DEFAULT_FEATURE_COLUMNS[3]
-    required_columns = {"지역", "범죄_유형", population_column, target_column}
+    required_columns = {COL_REGION, COL_CRIME_TYPE, population_column, target_column}
     missing_columns = required_columns - set(df.columns)
     if missing_columns:
         raise ValueError(f"feature engineering 필수 컬럼이 없습니다: {sorted(missing_columns)}")
@@ -182,23 +212,23 @@ def build_feature_engineering_stats(
     return {
         "global_mean_incidents": global_mean,
         "region_mean_incidents": (
-            df.assign(_target=target).groupby("지역")["_target"].mean().to_dict()
+            df.assign(_target=target).groupby(COL_REGION)["_target"].mean().to_dict()
         ),
         "crime_type_mean_incidents": (
-            df.assign(_target=target).groupby("범죄_유형")["_target"].mean().to_dict()
+            df.assign(_target=target).groupby(COL_CRIME_TYPE)["_target"].mean().to_dict()
         ),
         "region_crime_mean_incidents": (
             df.assign(_target=target)
-            .groupby(["지역", "범죄_유형"])["_target"]
+            .groupby([COL_REGION, COL_CRIME_TYPE])["_target"]
             .mean()
             .to_dict()
         ),
         "region_mean_population": (
-            df.assign(_population=population).groupby("지역")["_population"].mean().to_dict()
+            df.assign(_population=population).groupby(COL_REGION)["_population"].mean().to_dict()
         ),
         "region_population_bounds": (
             df.assign(_population=population)
-            .groupby("지역")["_population"]
+            .groupby(COL_REGION)["_population"]
             .agg(["min", "max"])
             .to_dict("index")
         ),
@@ -231,13 +261,13 @@ def add_feature_engineering(
     region_population_means = stats.get("region_mean_population", {})
     population_column = DEFAULT_FEATURE_COLUMNS[3]
 
-    engineered["지역별_평균_발생_건수"] = engineered["지역"].map(region_means)
-    engineered["범죄유형별_평균_발생_건수"] = engineered["범죄_유형"].map(crime_type_means)
+    engineered["지역별_평균_발생_건수"] = engineered[COL_REGION].map(region_means)
+    engineered["범죄유형별_평균_발생_건수"] = engineered[COL_CRIME_TYPE].map(crime_type_means)
 
     fallback_key_values = []
     for _, row in engineered.iterrows():
-        region = row["지역"]
-        crime_type = row["범죄_유형"]
+        region = row[COL_REGION]
+        crime_type = row[COL_CRIME_TYPE]
         fallback_value = region_crime_means.get((region, crime_type), global_mean)
         mean_population = region_population_means.get(region)
 
@@ -251,9 +281,9 @@ def add_feature_engineering(
     engineered["전년도_범죄율"] = 0.0
 
     if {target_column, CRIME_RATE_COLUMN}.issubset(engineered.columns):
-        sort_columns = ["지역", "범죄_유형", "연도"]
+        sort_columns = [COL_REGION, COL_CRIME_TYPE, COL_YEAR]
         sorted_df = engineered.sort_values(sort_columns)
-        grouped = sorted_df.groupby(["지역", "범죄_유형"], sort=False)
+        grouped = sorted_df.groupby([COL_REGION, COL_CRIME_TYPE], sort=False)
         prev_incidents = grouped[target_column].shift(1)
         prev_rate = grouped[CRIME_RATE_COLUMN].shift(1)
         engineered.loc[sorted_df.index, "전년도_발생_건수"] = prev_incidents.values
@@ -304,8 +334,8 @@ def split_train_test(
     train_years: tuple[int, ...] = DEFAULT_TRAIN_YEARS,
     test_year: int = DEFAULT_TEST_YEAR,
 ):
-    train_df = df[df["연도"].isin(train_years)]
-    test_df = df[df["연도"] == test_year]
+    train_df = df[df[COL_YEAR].isin(train_years)]
+    test_df = df[df[COL_YEAR] == test_year]
 
     if train_df.empty:
         raise ValueError(f"{list(train_years)} 학습 데이터가 없습니다.")
@@ -313,16 +343,21 @@ def split_train_test(
     if test_df.empty:
         raise ValueError(f"{test_year} 테스트 데이터가 없습니다.")
 
-    X, y = split_features_target(
-        df=df,
-        feature_columns=feature_columns,
-        target_column=target_column,
-    )
+    if feature_columns is None:
+        feature_columns = DEFAULT_FEATURE_COLUMNS + [
+            column for column in ENGINEERED_FEATURE_COLUMNS if column in df.columns
+        ]
+    missing_columns = [
+        col for col in feature_columns + [target_column] if col not in df.columns
+    ]
+    if missing_columns:
+        raise ValueError(f"필수 컬럼이 없습니다: {missing_columns}")
 
-    X_train = X.loc[train_df.index]
+    y = df[target_column]
+    encoded_columns = fit_feature_encoder(train_df[feature_columns])
+    X_train = transform_features(train_df[feature_columns], encoded_columns)
     y_train = y.loc[train_df.index]
-
-    X_test = X.loc[test_df.index]
+    X_test = transform_features(test_df[feature_columns], encoded_columns)
     y_test = y.loc[test_df.index]
 
     return X_train, X_test, y_train, y_test
@@ -342,8 +377,8 @@ def split_by_year(
         test  = 2024
     """
 
-    train_df = df[df["연도"] < test_year]
-    test_df = df[df["연도"] == test_year]
+    train_df = df[df[COL_YEAR] < test_year]
+    test_df = df[df[COL_YEAR] == test_year]
 
     if train_df.empty:
         raise ValueError(f"{test_year} 이전 학습 데이터가 없습니다.")
@@ -351,16 +386,21 @@ def split_by_year(
     if test_df.empty:
         raise ValueError(f"{test_year} 테스트 데이터가 없습니다.")
 
-    X, y = split_features_target(
-        df=df,
-        feature_columns=feature_columns,
-        target_column=target_column,
-    )
+    if feature_columns is None:
+        feature_columns = DEFAULT_FEATURE_COLUMNS + [
+            column for column in ENGINEERED_FEATURE_COLUMNS if column in df.columns
+        ]
+    missing_columns = [
+        col for col in feature_columns + [target_column] if col not in df.columns
+    ]
+    if missing_columns:
+        raise ValueError(f"필수 컬럼이 없습니다: {missing_columns}")
 
-    X_train = X.loc[train_df.index]
+    y = df[target_column]
+    encoded_columns = fit_feature_encoder(train_df[feature_columns])
+    X_train = transform_features(train_df[feature_columns], encoded_columns)
     y_train = y.loc[train_df.index]
-
-    X_test = X.loc[test_df.index]
+    X_test = transform_features(test_df[feature_columns], encoded_columns)
     y_test = y.loc[test_df.index]
 
     return X_train, X_test, y_train, y_test

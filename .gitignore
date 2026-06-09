@@ -6,11 +6,15 @@ __pycache__/
 .vscode/
 .idea/
 
-data/generated/
-models/trained/
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
+!models/model_info.json
 
 *.csv
 *.xlsx
+*.xls
 
 .DS_Store
 Thumbs.db

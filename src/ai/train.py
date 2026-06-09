@@ -1,9 +1,11 @@
 import argparse
+import hashlib
 import json
 import pickle
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 SRC_DIR = Path(__file__).resolve().parents[1]
@@ -19,9 +21,10 @@ from ai.evaluator import ModelEvaluator
 from ai.linear.linear_model import LinearRegressionModel
 from ai.predict import predict
 from ai.preprocessing import (
+    DEFAULT_FEATURE_COLUMNS,
     DEFAULT_TARGET_COLUMN,
-    DEFAULT_TEST_YEAR,
-    DEFAULT_TRAIN_YEARS,
+    DEFAULT_TRAINING_CONFIG,
+    ENGINEERED_FEATURE_COLUMNS,
     add_feature_engineering,
     build_feature_engineering_stats,
     split_train_test,
@@ -30,6 +33,37 @@ from ai.random_forest.random_forest import RandomForestRegressorModel
 from ai.xgboost.xgb_model import XGBoostRegressorModel
 from model.excel_model import UploadParams
 from services.excel_pipeline import run_excel_pipeline
+
+
+class StandardizedLinearRegressionModel:
+    """Scale model inputs before fitting the custom gradient-descent linear model."""
+
+    def __init__(self, learning_rate=0.01, epochs=1000):
+        self.model = LinearRegressionModel(learning_rate=learning_rate, epochs=epochs)
+        self.mean_ = None
+        self.scale_ = None
+        self.feature_columns = None
+        self.feature_engineering_stats = None
+
+    @staticmethod
+    def _as_array(X):
+        if isinstance(X, pd.DataFrame):
+            return X.to_numpy(dtype=float)
+        return np.asarray(X, dtype=float)
+
+    def fit(self, X, y):
+        X_array = self._as_array(X)
+        self.mean_ = X_array.mean(axis=0)
+        self.scale_ = X_array.std(axis=0)
+        self.scale_[self.scale_ == 0] = 1.0
+        self.model.fit((X_array - self.mean_) / self.scale_, y)
+        return self
+
+    def predict(self, X):
+        if self.mean_ is None or self.scale_ is None:
+            raise ValueError("linear model scaler has not been fitted")
+        X_array = self._as_array(X)
+        return self.model.predict((X_array - self.mean_) / self.scale_)
 
 
 RANDOM_FOREST_CANDIDATES = {
@@ -68,7 +102,7 @@ RANDOM_FOREST_CANDIDATES = {
 
 def create_models():
     models = {
-        "linear": LinearRegressionModel(learning_rate=1e-16),
+        "linear": StandardizedLinearRegressionModel(learning_rate=0.01),
         "xgboost": XGBoostRegressorModel(),
     }
 
@@ -91,60 +125,230 @@ def train_models(X_train, y_train, feature_engineering_stats=None):
 
 
 def evaluate_models(models, X_test, y_test):
+    return evaluate_models_train_test(models, X_test, y_test, X_test, y_test)
+
+
+def evaluate_models_train_test(models, X_train, y_train, X_test, y_test, group_data=None):
     results = {}
 
     for model_name, model in models.items():
+        y_train_pred = predict(model, X_train)
         y_pred = predict(model, X_test)
-        results[model_name] = {
-            "model": model,
-            "metrics": ModelEvaluator.evaluate(y_test, y_pred),
-            "prediction_diversity": prediction_diversity_summary(y_pred),
-        }
+        results[model_name] = ModelEvaluator.evaluate_train_test(
+            y_train,
+            y_train_pred,
+            y_test,
+            y_pred,
+            group_data=group_data,
+        )
+        results[model_name]["model"] = model
 
     return results
 
 
 def prediction_diversity_summary(y_pred, top_n=5):
-    series = pd.Series(y_pred, dtype=float)
-    value_counts = series.value_counts(dropna=False)
-    top_values = []
+    return ModelEvaluator.prediction_diversity(y_pred, top_n=top_n)
 
-    for value, count in value_counts.head(top_n).items():
-        top_values.append(
-            {
-                "value": float(value),
-                "count": int(count),
-                "ratio": float(count / len(series)) if len(series) else 0.0,
+
+def previous_year_baseline(df, config=DEFAULT_TRAINING_CONFIG):
+    year_column, region_column, crime_column = DEFAULT_FEATURE_COLUMNS[:3]
+    target_column = DEFAULT_TARGET_COLUMN
+
+    train_df = df[df[year_column].isin(config.train_years)].copy()
+    test_df = df[df[year_column] == config.test_year].copy()
+    previous_year = config.test_year - 1
+
+    previous_df = train_df[train_df[year_column] == previous_year]
+    previous_lookup = (
+        previous_df.groupby([region_column, crime_column])[target_column].mean().to_dict()
+    )
+    group_mean = train_df.groupby([region_column, crime_column])[target_column].mean().to_dict()
+    global_mean = float(train_df[target_column].mean()) if not train_df.empty else 0.0
+
+    predictions = []
+    for _, row in test_df.iterrows():
+        key = (row[region_column], row[crime_column])
+        predictions.append(previous_lookup.get(key, group_mean.get(key, global_mean)))
+
+    return {
+        "name": "baseline_2023_same_region_crime",
+        "metrics": ModelEvaluator.evaluate(test_df[target_column], predictions),
+        "prediction_diversity": ModelEvaluator.prediction_diversity(predictions),
+    }
+
+
+def _selection_score(metrics):
+    return (
+        float(metrics["r2"]),
+        -float(metrics["rmse"]),
+        -float(metrics["mae"]),
+    )
+
+
+def _meets_or_beats_baseline(metrics, baseline_metrics):
+    return (
+        metrics["r2"] >= baseline_metrics["r2"]
+        and metrics["rmse"] <= baseline_metrics["rmse"]
+        and metrics["mae"] <= baseline_metrics["mae"]
+    )
+
+
+def _ablation_drop(full_metrics, ablation_metrics):
+    return {
+        "r2": float(full_metrics["r2"] - ablation_metrics["r2"]),
+        "rmse": float(ablation_metrics["rmse"] - full_metrics["rmse"]),
+        "mae": float(ablation_metrics["mae"] - full_metrics["mae"]),
+    }
+
+
+def select_best_model(
+    results,
+    baseline,
+    ablation_results,
+):
+    baseline_metrics = baseline["metrics"]
+    comparison = {
+        "baseline": baseline,
+        "ai_candidates": results,
+        "baseline_warnings": {},
+    }
+
+    baseline_outperformed = True
+    for name, item in results.items():
+        metrics = item["test_metrics"]
+        if not _meets_or_beats_baseline(metrics, baseline_metrics):
+            comparison["baseline_warnings"][name] = {
+                "metrics": metrics,
+                "reason": "below baseline on at least one of R2, RMSE, MAE",
             }
+        else:
+            baseline_outperformed = False
+
+    def sort_key(name):
+        metrics = results[name]["test_metrics"]
+        diversity = results[name].get("prediction_diversity", {})
+        ablation_item = ablation_results.get(name)
+        ablation_metrics = (
+            ablation_item["test_metrics"] if ablation_item is not None else metrics
+        )
+        ablation_score = _selection_score(ablation_metrics)
+        return (
+            *_selection_score(metrics),
+            float(diversity.get("unique_ratio", 0.0)),
+            *ablation_score,
+        )
+
+    best_name = max(results, key=sort_key)
+    best_result = results[best_name]
+    ablation_item = ablation_results.get(best_name)
+    best_baseline_name = baseline["name"]
+    warnings = []
+
+    if baseline_outperformed:
+        warnings.extend(
+            [
+                "Baseline outperformed all AI models.",
+                "However, project requires saving one AI model.",
+                f"{best_name} was selected by Test R2, RMSE, and MAE among AI models.",
+            ]
+        )
+    elif best_name in comparison["baseline_warnings"]:
+        warnings.extend(
+            [
+                f"{best_name} is below baseline on at least one of R2, RMSE, MAE.",
+                "However, project requires saving one AI model.",
+            ]
+        )
+
+    reason = [
+        "Selected by highest Test R2, then lower RMSE and MAE.",
+        "Baseline is reported separately and is not saved as the final AI model.",
+    ]
+
+    reason.append(f"{best_name} had the best AI model selection score.")
+
+    if ablation_item is not None:
+        drop = _ablation_drop(best_result["test_metrics"], ablation_item["test_metrics"])
+        reason.append(
+            "Robust ablation performance without previous-year features: "
+            f"R2 drop={drop['r2']:.4f}, RMSE increase={drop['rmse']:.4f}, "
+            f"MAE increase={drop['mae']:.4f}."
+        )
+
+    diversity = best_result.get("prediction_diversity", {})
+    if diversity:
+        reason.append(
+            f"Better prediction diversity: unique ratio={diversity.get('unique_ratio', 0.0):.4f}."
         )
 
     return {
-        "row_count": int(len(series)),
-        "unique_count": int(series.nunique(dropna=False)),
-        "unique_ratio": float(series.nunique(dropna=False) / len(series))
-        if len(series)
-        else 0.0,
-        "min": float(series.min()) if len(series) else None,
-        "max": float(series.max()) if len(series) else None,
-        "mean": float(series.mean()) if len(series) else None,
-        "std": float(series.std(ddof=0)) if len(series) else None,
-        "top_values": top_values,
+        "best_name": best_name,
+        "best_baseline_name": best_baseline_name,
+        "best_ai_name": best_name,
+        "final_saved_model": best_name,
+        "best_result": best_result,
+        "best_model": best_result["model"],
+        "best_is_baseline": False,
+        "baseline_outperformed_ai": baseline_outperformed,
+        "comparison": comparison,
+        "warning": warnings,
+        "reason": reason,
     }
+
+
+def run_ablation_without_previous_features(
+    engineered_df,
+    config=DEFAULT_TRAINING_CONFIG,
+    feature_engineering_stats=None,
+):
+    previous_features = set(ENGINEERED_FEATURE_COLUMNS[:2])
+    ablation_features = DEFAULT_FEATURE_COLUMNS + [
+        column
+        for column in ENGINEERED_FEATURE_COLUMNS
+        if column in engineered_df.columns and column not in previous_features
+    ]
+
+    X_train, X_test, y_train, y_test = split_train_test(
+        engineered_df,
+        feature_columns=ablation_features,
+        train_years=config.train_years,
+        test_year=config.test_year,
+    )
+    models = train_models(
+        X_train,
+        y_train,
+        feature_engineering_stats=feature_engineering_stats,
+    )
+
+    test_group_data = engineered_df[engineered_df["연도"] == config.test_year]
+
+    return evaluate_models_train_test(
+        models,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        group_data=test_group_data,
+    )
 
 
 def _sorted_years(values):
     return sorted(int(year) for year in values)
 
 
-def train_and_evaluate(df):
+def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
     print("\n========== 전체 데이터 연도 분포 ==========")
     print(df["연도"].value_counts().sort_index())
 
-    train_source_df = df[df["연도"].isin(DEFAULT_TRAIN_YEARS)]
+    train_source_df = df[df["연도"].isin(config.train_years)]
     feature_engineering_stats = build_feature_engineering_stats(train_source_df)
     engineered_df = add_feature_engineering(df, stats=feature_engineering_stats)
 
-    X_train, X_test, y_train, y_test = split_train_test(engineered_df)
+    X_train, X_test, y_train, y_test = split_train_test(
+        engineered_df,
+        train_years=config.train_years,
+        test_year=config.test_year,
+    )
 
     train_years = _sorted_years(X_train["연도"].unique())
     test_years = _sorted_years(X_test["연도"].unique())
@@ -153,26 +357,52 @@ def train_and_evaluate(df):
     print(f"Train 연도: {train_years}")
     print(f"Test 연도 : {test_years}")
 
-    assert set(train_years) == set(DEFAULT_TRAIN_YEARS), (
-        "Train에 2022, 2023 외 연도가 포함됨"
-    )
-    assert set(test_years) == {DEFAULT_TEST_YEAR}, (
-        "Test가 2024만으로 구성되지 않음"
-    )
+    if set(train_years) != set(config.train_years):
+        raise ValueError(
+            f"Train 연도가 설정과 다릅니다. expected={list(config.train_years)}, actual={train_years}"
+        )
+    if set(test_years) != {config.test_year}:
+        raise ValueError(
+            f"Test 연도가 설정과 다릅니다. expected={[config.test_year]}, actual={test_years}"
+        )
 
     models = train_models(
         X_train,
         y_train,
         feature_engineering_stats=feature_engineering_stats,
     )
-    results = evaluate_models(models, X_test, y_test)
-    best_name, best_result = ModelEvaluator.compare(results)
+    test_group_data = engineered_df[engineered_df["연도"] == config.test_year]
+    results = evaluate_models_train_test(
+        models,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        group_data=test_group_data,
+    )
+    baseline = previous_year_baseline(df, config=config)
+    ablation_results = run_ablation_without_previous_features(
+        engineered_df,
+        config=config,
+        feature_engineering_stats=feature_engineering_stats,
+    )
+    selection = select_best_model(results, baseline, ablation_results)
 
     return {
         "models": models,
         "results": results,
-        "best_name": best_name,
-        "best_model": best_result["model"],
+        "baseline": baseline,
+        "ablation_results": ablation_results,
+        "selection": selection,
+        "best_name": selection["best_name"],
+        "best_model": selection["best_model"],
+        "best_is_baseline": selection["best_is_baseline"],
+        "best_baseline_name": selection["best_baseline_name"],
+        "best_ai_name": selection["best_ai_name"],
+        "final_saved_model": selection["final_saved_model"],
+        "baseline_outperformed_ai": selection["baseline_outperformed_ai"],
+        "selection_reason": selection["reason"],
+        "selection_warning": selection["warning"],
         "train_years": train_years,
         "test_years": test_years,
         "feature_columns": list(X_train.columns),
@@ -188,9 +418,84 @@ def train_and_evaluate(df):
     }
 
 
-def print_train_report(results):
+def print_train_report(results, baseline=None, ablation_results=None, selection=None):
     ModelEvaluator.print_report(results)
-    print_prediction_diversity_report(results)
+    if baseline is not None:
+        print_baseline_report(baseline)
+    if ablation_results is not None:
+        print_ablation_report(ablation_results)
+    if selection is not None:
+        print_selection_report(selection)
+
+
+def print_selection_report(selection):
+    print("\n========== 최종 선택 모델 ==========")
+    print(f"Best Baseline: {selection['best_baseline_name']}")
+    print(f"Best AI Model: {selection['best_ai_name']}")
+    print(f"Final Saved Model: {selection['final_saved_model']}")
+
+    warnings = selection.get("warning", [])
+    if warnings:
+        print("\nWarning:")
+        for warning in warnings:
+            print(f"- {warning}")
+
+    print("\nReason:")
+    for reason in selection.get("reason", []):
+        print(f"- {reason}")
+
+    baseline_warnings = selection.get("comparison", {}).get("baseline_warnings", {})
+    if baseline_warnings:
+        print("\nAI models below baseline:")
+        for name in baseline_warnings:
+            print(f"- {name}: below baseline on R2, RMSE, or MAE")
+
+
+def print_baseline_report(baseline):
+    metrics = baseline["metrics"]
+    diversity = baseline.get("prediction_diversity", {})
+
+    print("\n========== Baseline 평가 ==========")
+    print(f"\n[{baseline['name']}]")
+    print(f"Test R2    : {metrics['r2']:.4f}")
+    print(f"Test RMSE  : {metrics['rmse']:.4f}")
+    print(f"Test MAE   : {metrics['mae']:.4f}")
+    print(f"Test MSE   : {metrics['mse']:.4f}")
+    if diversity:
+        print(f"Unique prediction ratio: {diversity['unique_ratio']:.4f}")
+        print("Top repeated predictions:")
+        for row in diversity.get("top_values", []):
+            print(
+                f"  {row['value']:.6f} -> {row['count']}행 "
+                f"({row['ratio']:.2%})"
+            )
+
+
+def print_ablation_report(results):
+    print("\n========== Ablation: without previous-year features ==========")
+
+    for name, item in results.items():
+        train_metrics = item["train_metrics"]
+        test_metrics = item["test_metrics"]
+        diversity = item.get("prediction_diversity", {})
+
+        print(f"\n[ablation_without_previous_features] {name}")
+        print(f"Train R2   : {train_metrics['r2']:.4f}")
+        print(f"Train RMSE : {train_metrics['rmse']:.4f}")
+        print(f"Train MAE  : {train_metrics['mae']:.4f}")
+        print(f"Train MSE  : {train_metrics['mse']:.4f}")
+        print(f"Test R2    : {test_metrics['r2']:.4f}")
+        print(f"Test RMSE  : {test_metrics['rmse']:.4f}")
+        print(f"Test MAE   : {test_metrics['mae']:.4f}")
+        print(f"Test MSE   : {test_metrics['mse']:.4f}")
+        if diversity:
+            print(f"Unique prediction ratio: {diversity['unique_ratio']:.4f}")
+            print("Top repeated predictions:")
+            for row in diversity.get("top_values", []):
+                print(
+                    f"  {row['value']:.6f} -> {row['count']}행 "
+                    f"({row['ratio']:.2%})"
+                )
 
 
 def print_prediction_diversity_report(results):
@@ -216,23 +521,38 @@ def print_prediction_diversity_report(results):
                 )
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PATH):
     model_path = Path(model_path)
     info_path = Path(info_path)
-    model_path.parent.mkdir(parents=True, exist_ok=True)
 
-    best_name = output["best_name"]
-    best_model = output["best_model"]
-    metrics = output["results"][best_name]["metrics"]
+    best_name = output["final_saved_model"]
+    best_model = output["models"][best_name]
 
     print(f"\n========== 최종 저장 모델 ==========")
-    print(f"Best Model: {best_name}")
+    print(f"Final Saved Model: {best_name}")
+
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics = output["results"][best_name]["metrics"]
 
     with model_path.open("wb") as file:
         pickle.dump(best_model, file)
+    model_sha256 = _sha256_file(model_path)
 
     model_info = {
         "best_model": best_name,
+        "best_baseline": output["best_baseline_name"],
+        "best_ai_model": output["best_ai_name"],
+        "final_saved_model": best_name,
+        "model_file": model_path.name,
+        "model_sha256": model_sha256,
         "metrics": {name: float(value) for name, value in metrics.items()},
         "prediction_diversity": output["results"][best_name][
             "prediction_diversity"
@@ -242,6 +562,12 @@ def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PAT
         "train_years": output["train_years"],
         "test_years": output["test_years"],
         "target_column": DEFAULT_TARGET_COLUMN,
+        "selection_reason": output.get("selection_reason", []),
+        "selection_warning": output.get("selection_warning", []),
+        "baseline_outperformed_ai": bool(output.get("baseline_outperformed_ai")),
+        "baseline_metrics": {
+            name: float(value) for name, value in output["baseline"]["metrics"].items()
+        },
     }
 
     with info_path.open("w", encoding="utf-8") as file:
@@ -249,6 +575,7 @@ def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PAT
 
     print(f"Model saved: {model_path}")
     print(f"Model info saved: {info_path}")
+    print(f"Model sha256: {model_sha256}")
 
     return model_path
 
@@ -303,7 +630,12 @@ def main():
     print(f"컬럼: {list(df.columns)}")
 
     output = train_and_evaluate(df)
-    print_train_report(output["results"])
+    print_train_report(
+        output["results"],
+        baseline=output["baseline"],
+        ablation_results=output["ablation_results"],
+        selection=output["selection"],
+    )
     save_best_model(output)
 
 

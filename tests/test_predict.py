@@ -1,12 +1,3 @@
-# pylint: disable=wrong-import-position
-
-import sys
-from pathlib import Path
-
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
 import pandas as pd
 import pytest
 
@@ -31,6 +22,14 @@ class NegativePredictionModel:
     @staticmethod
     def predict(_X):
         return [-10.0]
+
+
+class BasicPredictionModel:
+    feature_columns = ["연도", "인구수"]
+
+    @staticmethod
+    def predict(X):
+        return X["인구수"] / 100000
 
 
 class SinglePredictionRangeModel:
@@ -58,16 +57,26 @@ class SinglePredictionRangeModel:
         return X["전년도_발생_건수"]
 
 
+@pytest.mark.integration
 def test_best_model_file_exists():
     assert DEFAULT_MODEL_PATH.exists(), (
         "models/best_model.pkl이 없습니다. 먼저 python src/ai/train.py를 실행하세요."
     )
 
 
-def test_predict():
+@pytest.mark.integration
+def test_predict_with_saved_model():
     df = make_sample_data()
 
     y_pred = predict(df)
+
+    assert len(y_pred) == len(df)
+
+
+def test_predict():
+    df = make_sample_data()
+
+    y_pred = predict(BasicPredictionModel(), df[["연도", "인구수"]])
 
     assert len(y_pred) == len(df)
 
@@ -78,6 +87,7 @@ def test_predict_one():
         region="서울",
         crime_type="절도",
         population=9000000,
+        model=SinglePredictionRangeModel(),
     )
 
     assert isinstance(result, float)

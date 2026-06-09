@@ -1,3 +1,5 @@
+import hashlib
+import json
 import pickle
 import sys
 from collections import Counter
@@ -8,13 +10,13 @@ import pandas as pd
 SRC_DIR = Path(__file__).resolve().parents[1]
 ROOT_DIR = SRC_DIR.parent
 DEFAULT_MODEL_PATH = ROOT_DIR / "models" / "best_model.pkl"
-PREDICTED_INCIDENTS_COLUMN = "예측_발생_건수"
-PREDICTED_RATE_COLUMN = "예측_범죄율"
+DEFAULT_MODEL_INFO_PATH = ROOT_DIR / "models" / "model_info.json"
 POPULATION_RANGE_TOLERANCE = 0.5
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from constants import PREDICTED_INCIDENTS_COLUMN, PREDICTED_RATE_COLUMN
 from ai.preprocessing import (
     DEFAULT_FEATURE_COLUMNS,
     ENGINEERED_FEATURE_COLUMNS,
@@ -25,14 +27,57 @@ from ai.preprocessing import (
 )
 
 
-def load_best_model(model_path=DEFAULT_MODEL_PATH):
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _model_info_path_for(model_path: Path) -> Path:
+    if model_path == DEFAULT_MODEL_PATH:
+        return DEFAULT_MODEL_INFO_PATH
+    return model_path.with_name("model_info.json")
+
+
+def _verify_model_hash(model_path: Path, info_path: Path) -> None:
+    if not info_path.exists():
+        raise ValueError(
+            f"모델 메타데이터 파일이 없습니다: {info_path}. "
+            "모델을 신뢰할 수 없어 로드하지 않습니다."
+        )
+
+    with info_path.open("r", encoding="utf-8") as file:
+        model_info = json.load(file)
+
+    expected_hash = model_info.get("model_sha256")
+    if not expected_hash:
+        raise ValueError(
+            f"모델 메타데이터에 model_sha256 값이 없습니다: {info_path}. "
+            "python src/ai/train.py를 다시 실행해 모델을 재생성하세요."
+        )
+
+    actual_hash = _sha256_file(model_path)
+    if actual_hash != expected_hash:
+        raise ValueError(
+            "모델 파일 해시가 일치하지 않습니다. "
+            f"expected={expected_hash}, actual={actual_hash}. "
+            "models/best_model.pkl 또는 model_info.json이 변경되었을 수 있어 로드하지 않습니다."
+        )
+
+
+def load_best_model(model_path=DEFAULT_MODEL_PATH, info_path=None):
     model_path = Path(model_path)
+    info_path = Path(info_path) if info_path is not None else _model_info_path_for(model_path)
 
     if not model_path.exists():
         raise FileNotFoundError(
             f"저장된 모델 파일이 없습니다: {model_path}. "
             "먼저 `python src/ai/train.py`를 실행해 best_model.pkl을 생성하세요."
         )
+
+    _verify_model_hash(model_path, info_path)
 
     with model_path.open("rb") as file:
         return pickle.load(file)
@@ -251,6 +296,18 @@ def _clip_negative_predictions(predictions):
     return [max(0.0, float(value)) for value in predictions]
 
 
+def prediction_clip_report(predictions):
+    series = pd.Series(predictions, dtype=float)
+    negative_count = int((series < 0).sum())
+    total_count = int(len(series))
+
+    return {
+        "total_count": total_count,
+        "negative_count": negative_count,
+        "negative_ratio": float(negative_count / total_count) if total_count else 0.0,
+    }
+
+
 def _validate_single_prediction_population(model, X):
     stats = getattr(model, "feature_engineering_stats", None)
     if not stats:
@@ -303,8 +360,15 @@ def predict(*args, model_path=DEFAULT_MODEL_PATH, debug=False, debug_printer=pri
 
     final_X = prepare_prediction_features(model, X)
     predictions = model.predict(final_X)
+    clip_report = prediction_clip_report(predictions)
     clipped_predictions = _clip_negative_predictions(predictions)
     if debug:
+        debug_printer("\n========== 음수 예측 clip 리포트 ==========")
+        debug_printer(
+            "clip 전 음수 예측: "
+            f"{clip_report['negative_count']}/{clip_report['total_count']} "
+            f"({clip_report['negative_ratio']:.2%})"
+        )
         _print_prediction_debug(
             model,
             X,
@@ -362,7 +426,8 @@ def predict_from_dataframe(df, debug=False, debug_printer=print):
     result_df[PREDICTED_RATE_COLUMN] = (
         result_df[PREDICTED_INCIDENTS_COLUMN] / result_df["인구수"] * 100000
     )
-    _print_prediction_file_summary(predicted_incidents, debug_printer=debug_printer)
+    if debug:
+        _print_prediction_file_summary(predicted_incidents, debug_printer=debug_printer)
 
     return result_df
 

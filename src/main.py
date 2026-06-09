@@ -16,8 +16,6 @@ import sys
 from glob import glob
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-
 from view.crime_view import CrimeView
 from viewmodel.crime_viewmodel import CrimeViewModel
 

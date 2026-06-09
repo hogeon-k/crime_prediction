@@ -464,11 +464,11 @@ class CrimeGeneratorWindow:
             messagebox.showwarning("경로 없음", "저장 경로를 입력하세요.")
             return
 
-        ok = DataExporter.save_to_csv(self._df, path)
-        if ok:
+        result = DataExporter.save_to_csv(self._df, path)
+        if result:
             messagebox.showinfo("더미 CSV 저장 완료", f"저장 완료:\n{path}")
         else:
-            messagebox.showerror("저장 실패", f"파일 저장에 실패했습니다:\n{path}")
+            messagebox.showerror("저장 실패", result.message)
 
     # ──────────────────────────────────────────
     #  UI 갱신 헬퍼

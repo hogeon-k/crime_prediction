@@ -85,6 +85,15 @@ class GenerationParams:
         return errors
 
 
+@dataclass(frozen=True)
+class ExportResult:
+    success: bool
+    message: str
+
+    def __bool__(self) -> bool:
+        return self.success
+
+
 def run_generation_pipeline(
     gui_input: Dict[str, Any],
     seed: int | None = 42,
@@ -249,12 +258,12 @@ class DataExporter:
         df: pd.DataFrame,
         filepath: str,
         encoding: str = "utf-8-sig",
-    ) -> bool:
+    ) -> ExportResult:
         try:
             df.to_csv(filepath, index=False, encoding=encoding)
-            return True
-        except Exception:
-            return False
+            return ExportResult(True, f"CSV 저장 완료: {filepath}")
+        except Exception as exc:
+            return ExportResult(False, f"CSV 저장 실패: {exc}")
 
     @staticmethod
     def preview(df: pd.DataFrame, rows: int = 5) -> Dict[str, Any]:
