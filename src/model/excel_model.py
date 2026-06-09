@@ -28,6 +28,8 @@ class CrimeState:
     failed_step: str = ""
     error_message: str = ""
     final_data: pd.DataFrame | None = None
+    predicted_incidents: float | None = None
+    predicted_rate: float | None = None
 
 
 @dataclass

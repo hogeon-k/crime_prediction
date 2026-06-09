@@ -14,12 +14,8 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ai.predict import (  # noqa: E402
-    PREDICTED_INCIDENTS_COLUMN,
-    PREDICTED_RATE_COLUMN,
-    predict_from_file,
-    predict_one,
-)
+from constants import PREDICTED_INCIDENTS_COLUMN, PREDICTED_RATE_COLUMN  # noqa: E402
+from constants import BASE_YEAR_COLUMN, TARGET_YEAR_COLUMN  # noqa: E402
 from gui.widgets import (  # noqa: E402
     ACCENT,
     BG,
@@ -45,7 +41,7 @@ from services.dummy_generator import (  # noqa: E402
     DataExporter,
     run_generation_pipeline,
 )
-from services.excel_pipeline import run_excel_pipeline  # noqa: E402
+from viewmodel.crime_viewmodel import CrimeViewModel  # noqa: E402
 
 PREDICTION_OUTPUT_PATH = ROOT_DIR / "data" / "prediction_result.xlsx"
 DEFAULT_GENERATED_PATH = SRC_DIR / "data" / "generated_crime_data.csv"
@@ -85,6 +81,7 @@ class BaseTab(ttk.Frame):
         self.root = app.root
         self._busy = False
         self._buttons: list[tk.Button] = []
+        self.viewmodel = CrimeViewModel(callback=lambda _state: None)
         self.configure(style="App.TFrame")
 
     def log(self, message: str) -> None:
@@ -369,16 +366,16 @@ class UploadPreprocessTab(BaseTab):
         threading.Thread(target=self._run_process, args=(params,), daemon=True).start()
 
     def _run_process(self, params: UploadParams) -> None:
-        try:
-            df = run_excel_pipeline(params)
+        df = self.viewmodel.process_upload(params)
+        if df is not None:
             self._df = df
             self.root.after(0, self._show_dataframe, df)
             self.log(f"업로드 전처리 완료: {len(df):,}행")
-        except Exception as exc:
-            self.root.after(0, lambda: messagebox.showerror("전처리 실패", str(exc)))
-            self.log(f"업로드 전처리 실패: {exc}")
-        finally:
-            self.root.after(0, lambda: self.set_busy(False))
+        else:
+            message = self.viewmodel.state.error_message
+            self.root.after(0, lambda: messagebox.showerror("전처리 실패", message))
+            self.log(f"업로드 전처리 실패: {message}")
+        self.root.after(0, lambda: self.set_busy(False))
 
     def _show_dataframe(self, df: pd.DataFrame) -> None:
         self.clear_table(self.tree)
@@ -417,6 +414,7 @@ class FilePredictionTab(BaseTab):
     def __init__(self, parent: ttk.Notebook, app: "CrimePredictionApp") -> None:
         super().__init__(parent, app)
         self.input_var = tk.StringVar()
+        self.target_year_var = tk.IntVar(value=2025)
         self._build()
 
     def _build(self) -> None:
@@ -435,6 +433,8 @@ class FilePredictionTab(BaseTab):
         row.pack(fill="x")
         ttk.Entry(row, textvariable=self.input_var, font=FONT_SMALL).pack(side="left", fill="x", expand=True)
         tk.Button(row, text="파일 선택", command=self._browse_input, relief="flat", bg=BORDER).pack(side="left", padx=6)
+        _label(row, "예측 대상 연도", fg=TEXT_SEC, bg=BG).pack(side="left", padx=(8, 4))
+        ttk.Entry(row, textvariable=self.target_year_var, font=FONT_SMALL, width=8).pack(side="left")
         self.add_button(_btn(row, "예측 실행", self._on_predict, bg=ACCENT)).pack(side="left")
         self.add_button(_btn(row, "결과 열기", self._open_result, bg=SUCCESS)).pack(side="left", padx=(6, 0))
 
@@ -444,7 +444,15 @@ class FilePredictionTab(BaseTab):
         inner.pack(fill="both", expand=True)
         self.tree = self.make_table(
             inner,
-            [COL_YEAR, COL_REGION, COL_CRIME, COL_POP, PREDICTED_INCIDENTS_COLUMN, PREDICTED_RATE_COLUMN],
+            [
+                BASE_YEAR_COLUMN,
+                TARGET_YEAR_COLUMN,
+                COL_REGION,
+                COL_CRIME,
+                COL_POP,
+                PREDICTED_INCIDENTS_COLUMN,
+                PREDICTED_RATE_COLUMN,
+            ],
         )
 
     def _browse_input(self) -> None:
@@ -459,22 +467,26 @@ class FilePredictionTab(BaseTab):
         if not path:
             messagebox.showwarning("입력 없음", "예측할 CSV/XLSX 파일을 선택하세요.")
             return
-        self.set_busy(True)
-        self.log(f"파일 예측 시작: {path}")
-        threading.Thread(target=self._run_predict, args=(path,), daemon=True).start()
-
-    def _run_predict(self, path: str) -> None:
         try:
-            df = predict_from_file(path, PREDICTION_OUTPUT_PATH)
+            target_year = int(self.target_year_var.get())
+        except Exception:
+            messagebox.showerror("입력 오류", "예측 대상 연도는 숫자여야 합니다.")
+            return
+        self.set_busy(True)
+        self.log(f"파일 예측 시작: {path}, 예측 대상 연도={target_year}")
+        threading.Thread(target=self._run_predict, args=(path, target_year), daemon=True).start()
+
+    def _run_predict(self, path: str, target_year: int) -> None:
+        df = self.viewmodel.predict_file(path, str(PREDICTION_OUTPUT_PATH), target_year=target_year)
+        if df is not None:
             self.root.after(0, self._show_dataframe, df)
             self.log(f"파일 예측 완료: {PREDICTION_OUTPUT_PATH}")
             self.root.after(0, lambda: messagebox.showinfo("예측 완료", f"결과 저장:\n{PREDICTION_OUTPUT_PATH}"))
-        except Exception as exc:
-            message = friendly_prediction_error(str(exc))
+        else:
+            message = self.viewmodel.state.error_message
             self.log(f"파일 예측 실패: {message}")
             self.root.after(0, lambda: messagebox.showerror("예측 실패", message))
-        finally:
-            self.root.after(0, lambda: self.set_busy(False))
+        self.root.after(0, lambda: self.set_busy(False))
 
     def _show_dataframe(self, df: pd.DataFrame) -> None:
         self.clear_table(self.tree)
@@ -483,7 +495,8 @@ class FilePredictionTab(BaseTab):
                 "",
                 "end",
                 values=[
-                    row.get(COL_YEAR, ""),
+                    row.get(BASE_YEAR_COLUMN, ""),
+                    row.get(TARGET_YEAR_COLUMN, ""),
                     row.get(COL_REGION, ""),
                     row.get(COL_CRIME, ""),
                     self.format_number(row.get(COL_POP, "")),
@@ -559,21 +572,20 @@ class SinglePredictionTab(BaseTab):
         ).start()
 
     def _run_predict(self, year: int, region: str, crime_type: str, population: int) -> None:
-        try:
-            predicted_incidents = predict_one(year, region, crime_type, population)
-            predicted_rate = predicted_incidents / population * 100000
+        predicted_incidents = self.viewmodel.predict_one(year, region, crime_type, population)
+        if predicted_incidents is not None:
+            predicted_rate = self.viewmodel.state.predicted_rate or 0.0
             message = (
                 f"{year}년 {region} {crime_type} 예측 결과: "
                 f"발생 건수 {predicted_incidents:,.2f}건, 범죄율 {predicted_rate:.2f}"
             )
             self.root.after(0, self._append_result, message)
             self.log(message)
-        except Exception as exc:
-            message = friendly_prediction_error(str(exc))
+        else:
+            message = self.viewmodel.state.error_message
             self.root.after(0, lambda: messagebox.showerror("단일 예측 실패", message))
             self.log(f"단일 예측 실패: {message}")
-        finally:
-            self.root.after(0, lambda: self.set_busy(False))
+        self.root.after(0, lambda: self.set_busy(False))
 
     def _append_result(self, message: str) -> None:
         self.result_text.insert("end", message + "\n")

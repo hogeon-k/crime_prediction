@@ -12,11 +12,17 @@ ROOT_DIR = SRC_DIR.parent
 DEFAULT_MODEL_PATH = ROOT_DIR / "models" / "best_model.pkl"
 DEFAULT_MODEL_INFO_PATH = ROOT_DIR / "models" / "model_info.json"
 POPULATION_RANGE_TOLERANCE = 0.5
+MIN_PREDICTION_YEAR = 2020
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from constants import PREDICTED_INCIDENTS_COLUMN, PREDICTED_RATE_COLUMN
+from constants import (
+    BASE_YEAR_COLUMN,
+    PREDICTED_INCIDENTS_COLUMN,
+    PREDICTED_RATE_COLUMN,
+    TARGET_YEAR_COLUMN,
+)
 from ai.preprocessing import (
     DEFAULT_FEATURE_COLUMNS,
     ENGINEERED_FEATURE_COLUMNS,
@@ -413,10 +419,64 @@ def validate_prediction_input(df):
         raise ValueError(f"예측에 필요한 컬럼이 없습니다: {missing_columns}")
 
 
-def predict_from_dataframe(df, debug=False, debug_printer=print):
+def _normalize_target_year(target_year) -> int | None:
+    if target_year is None:
+        return None
+
+    try:
+        normalized_year = int(target_year)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("예측 대상 연도는 숫자여야 합니다.") from exc
+
+    if normalized_year < MIN_PREDICTION_YEAR:
+        raise ValueError(f"예측 대상 연도는 {MIN_PREDICTION_YEAR}년 이상이어야 합니다.")
+
+    return normalized_year
+
+
+def _apply_target_year(df: pd.DataFrame, target_year=None) -> pd.DataFrame:
+    normalized_year = _normalize_target_year(target_year)
+    result_df = df.copy()
+    if normalized_year is None:
+        return result_df
+
+    input_years = pd.to_numeric(result_df["연도"], errors="coerce")
+    if input_years.isna().any():
+        raise ValueError("입력 파일의 연도 컬럼은 숫자여야 합니다.")
+
+    max_input_year = int(input_years.max())
+    if normalized_year <= max_input_year:
+        raise ValueError(
+            "예측 대상 연도는 입력 파일의 가장 큰 연도보다 커야 합니다. "
+            f"입력 최대 연도={max_input_year}, 예측 대상 연도={normalized_year}"
+        )
+
+    result_df[BASE_YEAR_COLUMN] = input_years.astype(int)
+    result_df["연도"] = normalized_year
+    result_df[TARGET_YEAR_COLUMN] = normalized_year
+
+    return result_df
+
+
+def _order_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
+    preferred_columns = [
+        BASE_YEAR_COLUMN,
+        TARGET_YEAR_COLUMN,
+        "지역",
+        "범죄_유형",
+        "인구수",
+        PREDICTED_INCIDENTS_COLUMN,
+        PREDICTED_RATE_COLUMN,
+    ]
+    ordered = [column for column in preferred_columns if column in df.columns]
+    remaining = [column for column in df.columns if column not in ordered]
+    return df[ordered + remaining]
+
+
+def predict_from_dataframe(df, target_year=None, debug=False, debug_printer=print):
     validate_prediction_input(df)
 
-    result_df = df.copy()
+    result_df = _apply_target_year(df, target_year=target_year)
     predicted_incidents = predict(
         result_df,
         debug=debug,
@@ -429,7 +489,7 @@ def predict_from_dataframe(df, debug=False, debug_printer=print):
     if debug:
         _print_prediction_file_summary(predicted_incidents, debug_printer=debug_printer)
 
-    return result_df
+    return _order_prediction_columns(result_df)
 
 
 def _read_prediction_file(input_path):
@@ -461,9 +521,14 @@ def _write_prediction_file(df, output_path):
     raise ValueError("지원하지 않는 출력 파일 형식입니다. csv, xlsx, xls 파일만 사용할 수 있습니다.")
 
 
-def predict_from_file(input_path, output_path, debug=False, debug_printer=print):
+def predict_from_file(input_path, output_path, target_year=None, debug=False, debug_printer=print):
     df = _read_prediction_file(input_path)
-    result_df = predict_from_dataframe(df, debug=debug, debug_printer=debug_printer)
+    result_df = predict_from_dataframe(
+        df,
+        target_year=target_year,
+        debug=debug,
+        debug_printer=debug_printer,
+    )
     _write_prediction_file(result_df, output_path)
 
     return result_df

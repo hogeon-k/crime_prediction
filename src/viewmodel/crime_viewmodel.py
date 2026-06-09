@@ -7,15 +7,25 @@ import pandas as pd
 from model.excel_model import (
     CrimeState,
     ProcessStatus,
+    UploadParams,
 )
+from services.ai_service import AIService
 from services.crime_service import CrimeService
+from services.dummy_generator import DataExporter
+from services.excel_pipeline import run_excel_pipeline
 
 
 class CrimeViewModel:
 
-    def __init__(self, callback: Callable[[CrimeState], None]) -> None:
+    def __init__(
+        self,
+        callback: Callable[[CrimeState], None],
+        service: CrimeService | None = None,
+        ai_service: AIService | None = None,
+    ) -> None:
         self._callback = callback
-        self._service = CrimeService()
+        self._service = service or CrimeService()
+        self._ai_service = ai_service or AIService()
         self.state = CrimeState()
 
     def process(
@@ -97,6 +107,84 @@ class CrimeViewModel:
 
         self.state.status = ProcessStatus.SUCCESS
         self.state.final_data = df
+        self._callback(self.state)
+
+    def process_upload(self, params: UploadParams) -> pd.DataFrame | None:
+        """Excel/CSV 업로드 use case를 실행하고 결과를 state에 저장한다."""
+        self.state = CrimeState(status=ProcessStatus.RUNNING)
+        self._callback(self.state)
+
+        try:
+            df = run_excel_pipeline(params, on_state_update=self._replace_state)
+        except Exception as exc:
+            self._set_failed("업로드", str(exc))
+            return None
+
+        self.state.status = ProcessStatus.SUCCESS
+        self.state.final_data = df
+        self._callback(self.state)
+        return df
+
+    def predict_file(
+        self,
+        input_path: str,
+        output_path: str,
+        target_year: int,
+    ) -> pd.DataFrame | None:
+        """저장된 모델로 파일 예측을 실행하고 결과를 state에 저장한다."""
+        self.state = CrimeState(status=ProcessStatus.RUNNING, current_step="파일 예측")
+        self._callback(self.state)
+
+        try:
+            df = self._ai_service.predict_file(input_path, output_path, target_year=target_year)
+        except Exception as exc:
+            self._set_failed(
+                "저장된 모델 예측",
+                self._ai_service.format_prediction_error(str(exc)),
+            )
+            return None
+
+        self.state.status = ProcessStatus.SUCCESS
+        self.state.final_data = df
+        self._callback(self.state)
+        return df
+
+    def predict_one(
+        self,
+        year: int,
+        region: str,
+        crime_type: str,
+        population: int,
+    ) -> float | None:
+        """저장된 모델로 단건 예측을 실행한다."""
+        self.state = CrimeState(status=ProcessStatus.RUNNING, current_step="단일 예측")
+        self._callback(self.state)
+
+        try:
+            predicted_incidents = self._ai_service.predict_one(
+                year=year,
+                region=region,
+                crime_type=crime_type,
+                population=population,
+            )
+        except Exception as exc:
+            self._set_failed(
+                "단일 예측",
+                self._ai_service.format_prediction_error(str(exc)),
+            )
+            return None
+
+        self.state.status = ProcessStatus.SUCCESS
+        self.state.predicted_incidents = float(predicted_incidents)
+        self.state.predicted_rate = float(predicted_incidents / population * 100000)
+        self._callback(self.state)
+        return float(predicted_incidents)
+
+    def save_dataframe(self, df: pd.DataFrame, path: str):
+        return DataExporter.save_to_csv(df, path)
+
+    def _replace_state(self, state: CrimeState) -> None:
+        self.state = state
         self._callback(self.state)
 
     def _set_failed(self, step: str, message: str) -> None:

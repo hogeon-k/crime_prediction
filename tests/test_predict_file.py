@@ -3,8 +3,10 @@ import pytest
 
 from ai.predict import (
     DEFAULT_MODEL_PATH,
+    BASE_YEAR_COLUMN,
     PREDICTED_INCIDENTS_COLUMN,
     PREDICTED_RATE_COLUMN,
+    TARGET_YEAR_COLUMN,
     prepare_prediction_features,
     predict_from_dataframe,
     predict_from_file,
@@ -97,6 +99,39 @@ def test_predict_from_file_xlsx(tmp_path, monkeypatch):
     assert PREDICTED_INCIDENTS_COLUMN in saved_df.columns
     assert PREDICTED_RATE_COLUMN in saved_df.columns
     assert len(result_df) == len(saved_df)
+
+
+def test_predict_from_file_applies_target_year_and_preserves_input_year(tmp_path, monkeypatch):
+    _use_basic_model(monkeypatch)
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    input_df = make_prediction_data().assign(연도=2024)
+    input_df.to_csv(input_path, index=False, encoding="utf-8-sig")
+
+    result_df = predict_from_file(input_path, output_path, target_year=2025)
+    saved_df = pd.read_csv(output_path)
+
+    assert (result_df["연도"] == 2025).all()
+    assert (result_df[BASE_YEAR_COLUMN] == 2024).all()
+    assert (result_df[TARGET_YEAR_COLUMN] == 2025).all()
+    assert BASE_YEAR_COLUMN in saved_df.columns
+    assert TARGET_YEAR_COLUMN in saved_df.columns
+    assert PREDICTED_INCIDENTS_COLUMN in saved_df.columns
+    assert PREDICTED_RATE_COLUMN in saved_df.columns
+
+
+def test_predict_from_file_rejects_target_year_not_after_input_year(tmp_path, monkeypatch):
+    _use_basic_model(monkeypatch)
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    make_prediction_data().assign(연도=2024).to_csv(
+        input_path,
+        index=False,
+        encoding="utf-8-sig",
+    )
+
+    with pytest.raises(ValueError, match="입력 파일의 가장 큰 연도보다 커야"):
+        predict_from_file(input_path, output_path, target_year=2024)
 
 
 def test_predict_from_dataframe_requires_feature_columns():

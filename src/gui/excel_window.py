@@ -7,10 +7,11 @@ from tkinter import filedialog, messagebox, ttk
 
 import pandas as pd
 
-from ai.predict import (
+from constants import (
+    BASE_YEAR_COLUMN,
     PREDICTED_INCIDENTS_COLUMN,
     PREDICTED_RATE_COLUMN,
-    predict_from_file,
+    TARGET_YEAR_COLUMN,
 )
 from gui.widgets import (
     ACCENT,
@@ -31,7 +32,8 @@ from gui.widgets import (
 )
 from model.excel_model import CrimeState, ProcessStatus, UploadParams
 from services.dummy_generator import DataExporter
-from services.excel_pipeline import run_excel_pipeline
+from services.ai_service import AIService
+from viewmodel.crime_viewmodel import CrimeViewModel
 
 STEP_MERGE = "\ub370\uc774\ud130 \ubcd1\ud569"
 COL_CRIME = "\ubc94\uc8c4_\uc720\ud615"
@@ -61,6 +63,7 @@ class ExcelWindow:
         self._pop_files: list[str] = []
         self._busy = False
         self._action_buttons: list[tk.Button] = []
+        self._viewmodel = CrimeViewModel(callback=self._on_state_update)
 
         self._build_ui()
 
@@ -199,12 +202,21 @@ class ExcelWindow:
         )
         _label(
             inner,
-            "CSV/XLSX 파일의 연도, 지역, 범죄_유형, 인구수 컬럼으로 "
-            "best_model.pkl 추론만 실행합니다.",
+            "CSV/XLSX 파일의 지역, 범죄_유형, 인구수 컬럼과 예측 대상 연도로 "
+            "best_model.pkl 추론을 실행합니다.",
             fg=TEXT_SEC,
             wraplength=310,
             justify="left",
         ).pack(anchor="w", pady=(0, 6))
+        year_row = tk.Frame(inner, bg=PANEL_BG)
+        year_row.pack(fill="x", pady=(0, 6))
+        _label(year_row, "예측 대상 연도", fg=TEXT_SEC, width=12, anchor="w").pack(
+            side="left"
+        )
+        self._target_year_var = tk.IntVar(value=2025)
+        ttk.Entry(year_row, textvariable=self._target_year_var, font=FONT_SMALL, width=10).pack(
+            side="left"
+        )
         self._predict_btn = _btn(
             inner,
             "🤖  저장된 모델로 예측 실행",
@@ -324,6 +336,8 @@ class ExcelWindow:
 
     def _build_table(self, parent: tk.Frame) -> None:
         cols = [
+            BASE_YEAR_COLUMN,
+            TARGET_YEAR_COLUMN,
             COL_CRIME,
             COL_REGION,
             COL_YEAR,
@@ -335,6 +349,8 @@ class ExcelWindow:
         ]
         self._tree = ttk.Treeview(parent, columns=cols, show="headings", height=10)
         widths = {
+            BASE_YEAR_COLUMN: 90,
+            TARGET_YEAR_COLUMN: 95,
             COL_CRIME: 130,
             COL_REGION: 70,
             COL_YEAR: 55,
@@ -440,14 +456,14 @@ class ExcelWindow:
         threading.Thread(target=self._run_pipeline, args=(params,), daemon=True).start()
 
     def _run_pipeline(self, params: UploadParams) -> None:
-        try:
-            df = run_excel_pipeline(params, on_state_update=self._on_state_update)
+        df = self._viewmodel.process_upload(params)
+        if df is not None:
             self._df = df
             self.root.after(0, self._on_success)
-        except Exception as exc:
-            msg = str(exc)
+            return
 
-            self.root.after(0, lambda: self._on_fail("업로드", msg))
+        msg = self._viewmodel.state.error_message
+        self.root.after(0, lambda: self._on_fail("업로드", msg))
 
     def _on_state_update(self, state: CrimeState) -> None:
         if state.status == ProcessStatus.RUNNING:
@@ -493,7 +509,7 @@ class ExcelWindow:
             )
             return
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        result = DataExporter.save_to_csv(self._df, path)
+        result = self._viewmodel.save_dataframe(self._df, path)
         if result:
             messagebox.showinfo(
                 "\uc800\uc7a5 \uc644\ub8cc", f"\uc800\uc7a5 \uc644\ub8cc:\n{path}"
@@ -518,13 +534,19 @@ class ExcelWindow:
         if not path:
             return
 
+        try:
+            target_year = int(self._target_year_var.get())
+        except Exception:
+            messagebox.showerror("입력 오류", "예측 대상 연도는 숫자여야 합니다.")
+            return
+
         self._set_busy(True)
         self._set_status("저장된 모델로 예측 중…", TEXT_SEC)
         self._progress.start(12)
         self._clear_table()
         threading.Thread(
             target=self._run_prediction,
-            args=(path,),
+            args=(path, target_year),
             daemon=True,
         ).start()
 
@@ -561,25 +583,21 @@ class ExcelWindow:
                 f"샘플 파일을 만들 수 없습니다:\n{exc}",
             )
 
-    def _run_prediction(self, input_path: str) -> None:
-        try:
-            df = predict_from_file(input_path, PREDICTION_OUTPUT_PATH)
+    def _run_prediction(self, input_path: str, target_year: int) -> None:
+        df = self._viewmodel.predict_file(
+            input_path,
+            str(PREDICTION_OUTPUT_PATH),
+            target_year=target_year,
+        )
+        if df is not None:
             self._df = df
             self.root.after(0, self._on_prediction_success)
-        except FileNotFoundError as exc:
-            message = self._format_prediction_error(str(exc))
-            self.root.after(
-                0, lambda m=message: self._on_fail("저장된 모델 예측", m)
-            )
-        except ValueError as exc:
-            message = self._format_prediction_error(str(exc))
-            self.root.after(
-                0, lambda m=message: self._on_fail("저장된 모델 예측", m)
-            )
-        except Exception as exc:
-            self.root.after(
-                0, lambda m=str(exc): self._on_fail("저장된 모델 예측", m)
-            )
+            return
+
+        message = self._viewmodel.state.error_message
+        self.root.after(
+            0, lambda m=message: self._on_fail("저장된 모델 예측", m)
+        )
 
     def _on_prediction_success(self) -> None:
         self._progress.stop()
@@ -605,25 +623,7 @@ class ExcelWindow:
 
     @staticmethod
     def _format_prediction_error(message: str) -> str:
-        if "best_model.pkl" in message:
-            return "먼저 src/ai/train.py를 실행해 모델을 생성하세요."
-
-        if "예측에 필요한 컬럼" in message:
-            return (
-                f"{message}\n\n"
-                "필수 컬럼: 연도, 지역, 범죄_유형, 인구수\n"
-                "예측 샘플 파일 생성 버튼으로 입력 양식을 확인할 수 있습니다."
-            )
-
-        if "학습 데이터에 없는 예측 입력값" in message:
-            return (
-                f"{message}\n\n"
-                "입력 파일의 지역/범죄_유형 값을 학습 데이터와 같은 이름으로 맞춰주세요.\n"
-                "예: 서울특별시는 서울로, 절도는 절도범죄로 자동 보정되지만 "
-                "학습에 전혀 없는 값은 예측할 수 없습니다."
-            )
-
-        return message
+        return AIService.format_prediction_error(message)
 
     def _update_stats(self, df: pd.DataFrame) -> None:
         self._stat_labels["rows"].config(text=f"{len(df):,} \ud589")
@@ -655,6 +655,8 @@ class ExcelWindow:
         for i, row in enumerate(preview["data"]):
             tag = "even" if i % 2 == 0 else "odd"
             vals = [
+                row.get(BASE_YEAR_COLUMN, ""),
+                row.get(TARGET_YEAR_COLUMN, ""),
                 row.get(COL_CRIME, ""),
                 row.get(COL_REGION, ""),
                 row.get(COL_YEAR, ""),

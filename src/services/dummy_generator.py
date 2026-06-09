@@ -113,8 +113,8 @@ def run_generation_pipeline(
     Returns:
         후처리 완료된 DataFrame. 실패 시 ValueError 발생.
     """
-    from model.excel_model import ProcessStatus
-    from viewmodel.crime_viewmodel import CrimeViewModel
+    from model.excel_model import CrimeState, ProcessStatus
+    from services.crime_service import CrimeService
 
     params = get_user_input_gui(gui_input)
     errors = params.validation_errors()
@@ -125,15 +125,31 @@ def run_generation_pipeline(
     df_raw = gen.generate()
 
     callback = on_state_update if on_state_update is not None else (lambda _s: None)
-    vm = CrimeViewModel(callback=callback)
-    vm.process_from_df(df_raw)
+    service = CrimeService()
+    state = CrimeState(status=ProcessStatus.RUNNING)
+    df = df_raw
 
-    if vm.state.status != ProcessStatus.SUCCESS:
-        raise RuntimeError(
-            f"파이프라인 실패 [{vm.state.failed_step}]: {vm.state.error_message}"
-        )
+    for name, fn in [
+        ("검증", service.validate),
+        ("결측치 처리", service.handle_missing),
+        ("타입 변환", service.convert_types),
+    ]:
+        state.current_step = name
+        callback(state)
+        result = fn(df)
+        if not result.success:
+            state.status = ProcessStatus.FAILED
+            state.failed_step = name
+            state.error_message = result.message
+            callback(state)
+            raise RuntimeError(f"파이프라인 실패 [{name}]: {result.message}")
+        df = result.data
+        state.completed_steps.append(name)
 
-    return vm.state.final_data
+    state.status = ProcessStatus.SUCCESS
+    state.final_data = df
+    callback(state)
+    return df
 
 
 def get_user_input_gui(data: Dict[str, Any]) -> GenerationParams:
