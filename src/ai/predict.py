@@ -73,6 +73,15 @@ def _verify_model_hash(model_path: Path, info_path: Path) -> None:
         )
 
 
+class _CompatibleModelUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == "__main__" and name == "StandardizedLinearRegressionModel":
+            from ai.train import StandardizedLinearRegressionModel
+
+            return StandardizedLinearRegressionModel
+        return super().find_class(module, name)
+
+
 def load_best_model(model_path=DEFAULT_MODEL_PATH, info_path=None):
     model_path = Path(model_path)
     info_path = Path(info_path) if info_path is not None else _model_info_path_for(model_path)
@@ -86,7 +95,7 @@ def load_best_model(model_path=DEFAULT_MODEL_PATH, info_path=None):
     _verify_model_hash(model_path, info_path)
 
     with model_path.open("rb") as file:
-        return pickle.load(file)
+        return _CompatibleModelUnpickler(file).load()
 
 
 def prepare_prediction_features(model, X):
@@ -434,7 +443,11 @@ def _normalize_target_year(target_year) -> int | None:
     return normalized_year
 
 
-def _apply_target_year(df: pd.DataFrame, target_year=None) -> pd.DataFrame:
+def _apply_target_year(
+    df: pd.DataFrame,
+    target_year=None,
+    allow_existing_target_year: bool = False,
+) -> pd.DataFrame:
     normalized_year = _normalize_target_year(target_year)
     result_df = df.copy()
     if normalized_year is None:
@@ -445,6 +458,11 @@ def _apply_target_year(df: pd.DataFrame, target_year=None) -> pd.DataFrame:
         raise ValueError("입력 파일의 연도 컬럼은 숫자여야 합니다.")
 
     max_input_year = int(input_years.max())
+    min_input_year = int(input_years.min())
+    if allow_existing_target_year and normalized_year == min_input_year == max_input_year:
+        result_df[TARGET_YEAR_COLUMN] = normalized_year
+        return result_df
+
     if normalized_year <= max_input_year:
         raise ValueError(
             "예측 대상 연도는 입력 파일의 가장 큰 연도보다 커야 합니다. "
@@ -473,15 +491,36 @@ def _order_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df[ordered + remaining]
 
 
-def predict_from_dataframe(df, target_year=None, debug=False, debug_printer=print):
+def predict_from_dataframe(
+    df,
+    target_year=None,
+    model=None,
+    model_path=DEFAULT_MODEL_PATH,
+    allow_existing_target_year: bool = False,
+    debug=False,
+    debug_printer=print,
+):
     validate_prediction_input(df)
 
-    result_df = _apply_target_year(df, target_year=target_year)
-    predicted_incidents = predict(
-        result_df,
-        debug=debug,
-        debug_printer=debug_printer,
+    result_df = _apply_target_year(
+        df,
+        target_year=target_year,
+        allow_existing_target_year=allow_existing_target_year,
     )
+    if model is None:
+        predicted_incidents = predict(
+            result_df,
+            model_path=model_path,
+            debug=debug,
+            debug_printer=debug_printer,
+        )
+    else:
+        predicted_incidents = predict(
+            model,
+            result_df,
+            debug=debug,
+            debug_printer=debug_printer,
+        )
     result_df[PREDICTED_INCIDENTS_COLUMN] = predicted_incidents
     result_df[PREDICTED_RATE_COLUMN] = (
         result_df[PREDICTED_INCIDENTS_COLUMN] / result_df["인구수"] * 100000
@@ -521,11 +560,23 @@ def _write_prediction_file(df, output_path):
     raise ValueError("지원하지 않는 출력 파일 형식입니다. csv, xlsx, xls 파일만 사용할 수 있습니다.")
 
 
-def predict_from_file(input_path, output_path, target_year=None, debug=False, debug_printer=print):
+def predict_from_file(
+    input_path,
+    output_path,
+    target_year=None,
+    model=None,
+    model_path=DEFAULT_MODEL_PATH,
+    allow_existing_target_year: bool = False,
+    debug=False,
+    debug_printer=print,
+):
     df = _read_prediction_file(input_path)
     result_df = predict_from_dataframe(
         df,
         target_year=target_year,
+        model=model,
+        model_path=model_path,
+        allow_existing_target_year=allow_existing_target_year,
         debug=debug,
         debug_printer=debug_printer,
     )

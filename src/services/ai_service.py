@@ -55,24 +55,35 @@ class AIService:
         debug: bool = False,
         debug_printer=print,
     ) -> pd.DataFrame:
+        model = self.load_model()
         return predict_from_file(
             input_path,
             output_path,
             target_year=target_year,
+            model=model,
+            allow_existing_target_year=True,
             debug=debug,
             debug_printer=debug_printer,
         )
 
     @staticmethod
     def format_prediction_error(message: str) -> str:
-        if "best_model.pkl" in message:
-            return "먼저 src/ai/train.py를 실행해 모델을 생성하거나 release asset에서 모델 파일을 내려받으세요."
+        if (
+            "best_model.pkl" in message
+            or "model_info.json" in message
+            or "모델 메타데이터 파일이 없습니다" in message
+        ):
+            return (
+                f"{message}\n\n"
+                "models/best_model.pkl과 models/model_info.json이 같은 폴더에 있어야 합니다. "
+                "먼저 `python src/ai/train.py`를 실행해 모델을 생성하세요."
+            )
 
         if "예측에 필요한 컬럼" in message:
             return (
                 f"{message}\n\n"
                 "필수 컬럼: 연도, 지역, 범죄_유형, 인구수\n"
-                "예측 샘플 파일 생성 기능으로 입력 형식을 확인할 수 있습니다."
+                "예측 샘플 파일 data/sample_prediction_input.xlsx 형식과 동일하게 작성하세요."
             )
 
         if "예측 대상 연도" in message:

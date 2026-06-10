@@ -18,6 +18,12 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from ai.evaluator import ModelEvaluator
+from ai.experiments import (
+    run_feature_importance_analysis,
+    run_hyperparameter_experiments,
+    run_year_walk_forward_validation,
+    summarize_training_data,
+)
 from ai.linear.linear_model import LinearRegressionModel
 from ai.predict import predict
 from ai.preprocessing import (
@@ -270,7 +276,7 @@ def select_best_model(
     if ablation_item is not None:
         drop = _ablation_drop(best_result["test_metrics"], ablation_item["test_metrics"])
         reason.append(
-            "Robust ablation performance without previous-year features: "
+            "Feature removal performance without previous-year features: "
             f"R2 drop={drop['r2']:.4f}, RMSE increase={drop['rmse']:.4f}, "
             f"MAE increase={drop['mae']:.4f}."
         )
@@ -340,6 +346,7 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
     print("\n========== 전체 데이터 연도 분포 ==========")
     print(df["연도"].value_counts().sort_index())
 
+    data_analysis = summarize_training_data(df)
     train_source_df = df[df["연도"].isin(config.train_years)]
     feature_engineering_stats = build_feature_engineering_stats(train_source_df)
     engineered_df = add_feature_engineering(df, stats=feature_engineering_stats)
@@ -387,12 +394,28 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
         feature_engineering_stats=feature_engineering_stats,
     )
     selection = select_best_model(results, baseline, ablation_results)
+    hyperparameter_experiments = run_hyperparameter_experiments(
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+    )
+    year_validation = run_year_walk_forward_validation(df, config=config)
+    feature_importance = run_feature_importance_analysis(
+        selection["best_model"],
+        X_test,
+        y_test,
+    )
 
     return {
         "models": models,
         "results": results,
         "baseline": baseline,
         "ablation_results": ablation_results,
+        "hyperparameter_experiments": hyperparameter_experiments,
+        "data_analysis": data_analysis,
+        "year_validation": year_validation,
+        "feature_importance": feature_importance,
         "selection": selection,
         "best_name": selection["best_name"],
         "best_model": selection["best_model"],
@@ -423,9 +446,19 @@ def print_train_report(results, baseline=None, ablation_results=None, selection=
     if baseline is not None:
         print_baseline_report(baseline)
     if ablation_results is not None:
-        print_ablation_report(ablation_results)
+        print_feature_removal_report(ablation_results)
     if selection is not None:
         print_selection_report(selection)
+
+
+def print_extended_experiment_report(output):
+    print_data_analysis_report(output.get("data_analysis", {}))
+    print_hyperparameter_experiment_report(
+        output.get("hyperparameter_experiments", {})
+    )
+    print_year_validation_report(output.get("year_validation", {}))
+    print_feature_importance_report(output.get("feature_importance", {}))
+    print_report_sentences()
 
 
 def print_selection_report(selection):
@@ -471,15 +504,15 @@ def print_baseline_report(baseline):
             )
 
 
-def print_ablation_report(results):
-    print("\n========== Ablation: without previous-year features ==========")
+def print_feature_removal_report(results):
+    print("\n========== Feature removal: without previous-year features ==========")
 
     for name, item in results.items():
         train_metrics = item["train_metrics"]
         test_metrics = item["test_metrics"]
         diversity = item.get("prediction_diversity", {})
 
-        print(f"\n[ablation_without_previous_features] {name}")
+        print(f"\n[feature_removal_without_previous_year_features] {name}")
         print(f"Train R2   : {train_metrics['r2']:.4f}")
         print(f"Train RMSE : {train_metrics['rmse']:.4f}")
         print(f"Train MAE  : {train_metrics['mae']:.4f}")
@@ -496,6 +529,168 @@ def print_ablation_report(results):
                     f"  {row['value']:.6f} -> {row['count']}행 "
                     f"({row['ratio']:.2%})"
                 )
+
+
+def print_ablation_report(results):
+    print_feature_removal_report(results)
+
+
+def _print_dataframe_table(rows, columns=None, float_format="{:.4f}".format):
+    if not rows:
+        print("(no rows)")
+        return
+
+    frame = pd.DataFrame(rows)
+    if columns is not None:
+        frame = frame[[column for column in columns if column in frame.columns]]
+    print(frame.to_string(index=False, float_format=float_format))
+
+
+def print_data_analysis_report(data_analysis):
+    print("\n========== 데이터 분석 요약 ==========")
+
+    distributions = data_analysis.get("distributions", {})
+    rows = []
+    for column, summary in distributions.items():
+        rows.append({"column": column, **summary})
+    print("\n[분포 및 IQR 이상값]")
+    _print_dataframe_table(
+        rows,
+        columns=[
+            "column",
+            "count",
+            "mean",
+            "std",
+            "min",
+            "q1",
+            "median",
+            "q3",
+            "max",
+            "outlier_count",
+        ],
+    )
+
+    print("\n[지역별 발생건수 상위 통계]")
+    region_rows = [
+        {"region": region, **stats}
+        for region, stats in data_analysis.get("top_region_incidents", {}).items()
+    ]
+    _print_dataframe_table(region_rows)
+
+    print("\n[범죄유형별 발생건수 상위 통계]")
+    crime_rows = [
+        {"crime_type": crime_type, **stats}
+        for crime_type, stats in data_analysis.get("top_crime_type_incidents", {}).items()
+    ]
+    _print_dataframe_table(crime_rows)
+
+    print("\n[숫자형 feature와 target 상관 Top 10]")
+    _print_dataframe_table(
+        data_analysis.get("correlations", [])[:10],
+        columns=["feature", "correlation"],
+    )
+
+
+def print_hyperparameter_experiment_report(experiments):
+    print("\n========== Hyperparameter experiment ==========")
+    rows = []
+    for row in experiments.get("rows", []):
+        flat_row = {key: value for key, value in row.items() if key != "params"}
+        flat_row.update(row.get("params", {}))
+        rows.append(flat_row)
+
+    _print_dataframe_table(
+        rows,
+        columns=[
+            "family",
+            "model",
+            "n_estimators",
+            "learning_rate",
+            "max_depth",
+            "min_samples_split",
+            "min_samples_leaf",
+            "max_features",
+            "reg_lambda",
+            "gamma",
+            "train_r2",
+            "test_r2",
+            "r2_gap",
+            "train_rmse",
+            "test_rmse",
+            "train_mae",
+            "test_mae",
+        ],
+    )
+
+    print("\nSelection rule:")
+    print(f"- {experiments.get('selection_rule')}")
+
+    best_by_family = experiments.get("best_by_family", {})
+    if best_by_family:
+        print("\nBest by family:")
+        _print_dataframe_table(
+            [
+                {
+                    "family": family,
+                    "model": row["model"],
+                    "test_r2": row["test_r2"],
+                    "test_rmse": row["test_rmse"],
+                    "test_mae": row["test_mae"],
+                    "r2_gap": row["r2_gap"],
+                }
+                for family, row in best_by_family.items()
+            ],
+            columns=["family", "model", "test_r2", "test_rmse", "test_mae", "r2_gap"],
+        )
+
+
+def print_year_validation_report(year_validation):
+    print("\n========== Year-based validation ==========")
+    print(year_validation.get("strategy"))
+    _print_dataframe_table(
+        year_validation.get("folds", []),
+        columns=[
+            "fold",
+            "model",
+            "train_years",
+            "validation_year",
+            "train_r2",
+            "validation_r2",
+            "r2_gap",
+            "validation_rmse",
+            "validation_mae",
+        ],
+    )
+
+
+def print_feature_importance_report(feature_importance):
+    print("\n========== Feature importance ==========")
+
+    print("\n[Split count importance Top 15]")
+    _print_dataframe_table(
+        feature_importance.get("split_importance", [])[:15],
+        columns=["feature", "split_count", "importance"],
+    )
+
+    print("\n[Permutation importance Top 15]")
+    _print_dataframe_table(
+        feature_importance.get("permutation_importance", [])[:15],
+        columns=["feature", "rmse_increase"],
+    )
+
+
+def print_report_sentences():
+    print("\n========== 보고서 작성 문장 ==========")
+    sentences = [
+        "본 프로젝트는 연도 순서가 있는 2022~2024년 데이터를 사용하므로 무작위 K-Fold보다 과거 연도로 학습하고 다음 연도를 검증하는 연도 기반 Hold-out 및 Walk-Forward 검증이 더 적절하다.",
+        "다만 관측 연도가 3개뿐이므로 Fold 1은 2022년 학습 후 2023년 검증, Fold 2는 2022~2023년 학습 후 2024년 검증으로 제한되며, 교차검증 결과는 최종 성능의 확정치가 아니라 일반화 가능성을 점검하는 보조 근거로 해석했다.",
+        "RandomForest와 XGBoost는 각각 n_estimators, tree depth, split 조건, 정규화 관련 후보군을 두고 동일한 Train/Test 분리에서 R2, RMSE, MAE를 비교했다.",
+        "최종 하이퍼파라미터 선택은 Test R2를 우선하고, 성능이 유사한 경우 Test RMSE와 Test MAE가 낮으며 Train/Test R2 차이가 작은 조합을 우선하는 기준으로 수행했다.",
+        "전년도 발생건수 및 전년도 범죄율 feature를 제거한 실험은 엄밀한 의미의 모델 구성요소 ablation이라기보다 특정 feature군 제거 실험 또는 feature importance 검증으로 표현하는 것이 정확하다.",
+        "발생건수, 인구수, 범죄율의 분포와 IQR 기준 극단값, 지역별 및 범죄유형별 발생건수 통계, 상관분석과 feature importance를 함께 확인하여 모델 성능뿐 아니라 데이터 구조와 주요 설명 변수를 점검했다.",
+    ]
+    for sentence in sentences:
+        print(f"- {sentence}")
 
 
 def print_prediction_diversity_report(results):
@@ -636,6 +831,7 @@ def main():
         ablation_results=output["ablation_results"],
         selection=output["selection"],
     )
+    print_extended_experiment_report(output)
     save_best_model(output)
 
 

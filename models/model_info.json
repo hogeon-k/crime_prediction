@@ -1,49 +1,50 @@
 {
-  "best_model": "random_forest_depth_8",
+  "best_model": "linear",
   "best_baseline": "baseline_2023_same_region_crime",
-  "best_ai_model": "random_forest_depth_8",
-  "final_saved_model": "random_forest_depth_8",
+  "best_ai_model": "linear",
+  "final_saved_model": "linear",
   "model_file": "best_model.pkl",
-  "model_sha256": "24cd5fef6568dfd42112d78e9ccb2d3aafa2da15d014bef01297c813d36f903c",
+  "model_sha256": "e47cd180b3ac8eb040a2831e22f8912974660e714c035b812ddfe7a3ca782ada",
   "metrics": {
-    "mse": 3856673.7345963065,
-    "rmse": 1963.8415757377952,
-    "mae": 679.5310012434851,
-    "r2": 0.9419231180812088
+    "mse": 3236909.856847397,
+    "rmse": 1799.1414221365137,
+    "mae": 748.2579824619575,
+    "smape": 86.40027789936039,
+    "r2": 0.9512560189233701
   },
   "prediction_diversity": {
     "row_count": 646,
-    "unique_count": 450,
-    "unique_ratio": 0.6965944272445821,
-    "min": 6.349533151299315,
-    "max": 78083.97,
-    "mean": 2822.056128902706,
-    "std": 7913.300745174926,
+    "unique_count": 582,
+    "unique_ratio": 0.9009287925696594,
+    "min": 0.0,
+    "max": 88666.21946173727,
+    "mean": 2942.8167832682807,
+    "std": 7724.56446787185,
     "top_values": [
       {
-        "value": 6.349533151299315,
-        "count": 27,
-        "ratio": 0.04179566563467492
+        "value": 0.0,
+        "count": 14,
+        "ratio": 0.021671826625386997
       },
       {
-        "value": 6.560273288605828,
-        "count": 17,
-        "ratio": 0.02631578947368421
+        "value": 2268.9055221897397,
+        "count": 4,
+        "ratio": 0.006191950464396285
       },
       {
-        "value": 11.431966099921382,
-        "count": 15,
-        "ratio": 0.02321981424148607
+        "value": 2333.281578507914,
+        "count": 4,
+        "ratio": 0.006191950464396285
       },
       {
-        "value": 6.877907725215636,
-        "count": 10,
-        "ratio": 0.015479876160990712
+        "value": 2207.7802693537074,
+        "count": 4,
+        "ratio": 0.006191950464396285
       },
       {
-        "value": 28.41873053791564,
-        "count": 7,
-        "ratio": 0.010835913312693499
+        "value": 2215.170945799758,
+        "count": 4,
+        "ratio": 0.006191950464396285
       }
     ]
   },
@@ -77,14 +78,12 @@
     "범죄_유형_공갈",
     "범죄_유형_교통범죄",
     "범죄_유형_기타 강간 강제추행등",
-    "범죄_유형_기타 강간/강제추행등",
     "범죄_유형_기타강간강제추행등",
     "범죄_유형_기타범죄",
     "범죄_유형_노동범죄",
     "범죄_유형_도박범죄",
     "범죄_유형_마약범죄",
     "범죄_유형_문서 인장",
-    "범죄_유형_문서/인장",
     "범죄_유형_문서인장",
     "범죄_유형_방화",
     "범죄_유형_배임",
@@ -99,7 +98,6 @@
     "범죄_유형_손괴",
     "범죄_유형_안보범죄",
     "범죄_유형_약취 유인",
-    "범죄_유형_약취/유인",
     "범죄_유형_약취유인",
     "범죄_유형_유가증권인지",
     "범죄_유형_유사강간",
@@ -107,7 +105,6 @@
     "범죄_유형_증수뢰",
     "범죄_유형_직권남용",
     "범죄_유형_직무유기",
-    "범죄_유형_체포/감금",
     "범죄_유형_체포감금",
     "범죄_유형_통화",
     "범죄_유형_특별경제범죄",
@@ -135,22 +132,23 @@
   ],
   "target_column": "발생_건수",
   "selection_reason": [
-    "Best balance among AI models.",
-    "Strong test performance across R2, RMSE, and MAE.",
-    "random_forest_depth_8 was selected as the final deployable AI model.",
-    "Robust ablation performance without previous-year features: R2 drop=0.0310, RMSE increase=468.6362, MAE increase=83.1958.",
-    "Better prediction diversity: unique ratio=0.6966."
+    "Selected by highest Test R2, then lower RMSE and MAE.",
+    "Baseline is reported separately and is not saved as the final AI model.",
+    "linear had the best AI model selection score.",
+    "Feature removal performance without previous-year features: R2 drop=0.4661, RMSE increase=4048.1777, MAE increase=1297.0064.",
+    "Better prediction diversity: unique ratio=0.9009."
   ],
   "selection_warning": [
     "Baseline outperformed all AI models.",
     "However, project requires saving one AI model.",
-    "random_forest_depth_8 was selected as the most balanced deployable AI model."
+    "linear was selected by Test R2, RMSE, and MAE among AI models."
   ],
   "baseline_outperformed_ai": true,
   "baseline_metrics": {
     "mse": 3004541.609366258,
     "rmse": 1733.361361449556,
     "mae": 569.0593602929195,
+    "smape": 45.285257209600346,
     "r2": 0.9547552060984686
   }
 }

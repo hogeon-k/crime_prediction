@@ -75,6 +75,20 @@ print(result)
 python src/ai/train.py
 ```
 
+학습 리포트에는 기존 모델 비교에 더해 다음 실험이 함께 출력됩니다.
+
+- RandomForest 후보군: `n_estimators`, `max_depth`, `min_samples_split`, `min_samples_leaf`, `max_features`
+- XGBoost 후보군: `n_estimators`, `learning_rate`, `max_depth`, `min_samples_split`, `reg_lambda`, `gamma`
+- 각 후보 조합의 Train/Test R2, RMSE, MAE 및 Train/Test R2 gap
+- 발생건수, 인구수, 범죄율 분포와 IQR 기준 이상값 수
+- 지역별, 범죄유형별 발생건수 통계
+- 숫자형 feature와 target 간 상관, split count 기반 importance, permutation importance
+- 연도 기반 Walk-Forward 검증: 2022 -> 2023, 2022~2023 -> 2024
+
+최종 하이퍼파라미터 선택 기준은 Test R2를 우선 최대화하고, 성능이 유사한 경우 Test RMSE, Test MAE, Train/Test R2 gap 순서로 더 작은 조합을 선택하는 방식입니다. 데이터가 2022~2024년 3개 연도뿐이므로 일반 K-Fold보다 과거 연도로 학습하고 다음 연도를 검증하는 연도 기준 검증을 사용하며, 이 결과는 최종 성능의 확정치가 아니라 일반화 가능성을 점검하는 보조 근거로 해석합니다.
+
+전년도 발생건수 및 전년도 범죄율 feature 제거 실험은 엄밀한 의미의 모델 ablation이라기보다 특정 feature군 제거 실험 또는 feature importance 검증으로 표현하는 것이 더 정확합니다.
+
 학습이 끝나면 로컬에 다음 파일이 생성됩니다.
 
 - `models/best_model.pkl`
