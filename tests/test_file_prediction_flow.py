@@ -108,8 +108,8 @@ def test_file_prediction_flow_reports_missing_model(tmp_path):
     result = viewmodel.predict_file(str(input_path), str(output_path), target_year=2025)
 
     assert result is None
-    assert "best_model.pkl" in viewmodel.state.error_message
-    assert "model_info.json" in viewmodel.state.error_message
+    assert "모델 파일을 찾을 수 없습니다" in viewmodel.state.error_message
+    assert "models/best_model.pkl" in viewmodel.state.error_message
 
 
 def test_file_prediction_flow_reports_bad_extension(tmp_path):
@@ -123,3 +123,56 @@ def test_file_prediction_flow_reports_bad_extension(tmp_path):
     assert result is None
     assert "csv, xlsx, xls" in viewmodel.state.error_message
 
+
+def test_model_performance_rows_are_loaded_through_viewmodel(tmp_path):
+    viewmodel = make_viewmodel(tmp_path)
+
+    rows = viewmodel.get_model_performance_rows()
+
+    assert [row["model"] for row in rows] == ["Linear Regression"]
+    assert all("rmse" in row for row in rows)
+    assert all("inference_seconds" in row for row in rows)
+    assert all("cpu_usage_percent" in row for row in rows)
+
+
+def test_model_performance_summary_loads_model_info(tmp_path):
+    info_path = tmp_path / "model_info.json"
+    info_path.write_text(
+        json.dumps(
+            {
+                "best_model": "linear",
+                "metrics": {
+                    "r2": 0.9513,
+                    "rmse": 1799.14,
+                    "mae": 748.26,
+                    "mse": 3236904.5,
+                    "smape": 12.4,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    service = AIService(
+        model_path=tmp_path / "best_model.pkl",
+        model_info_path=info_path,
+    )
+
+    summary = service.get_model_performance_summary()
+
+    assert summary["model"] == "linear"
+    assert summary["r2"] == 0.9513
+    assert summary["rmse"] == 1799.14
+    assert summary["message"] == ""
+
+
+def test_model_performance_summary_handles_missing_file(tmp_path):
+    service = AIService(
+        model_path=tmp_path / "best_model.pkl",
+        model_info_path=tmp_path / "missing_model_info.json",
+    )
+
+    summary = service.get_model_performance_summary()
+
+    assert summary["model"] is None
+    assert "모델 성능 정보 파일을 찾을 수 없습니다" in summary["message"]

@@ -7,6 +7,7 @@ from constants import (
     COL_CRIME_RATE,
     COL_CRIME_TYPE,
     COL_INCIDENTS,
+    COL_POPULATION,
     COL_REGION,
     PREDICTED_INCIDENTS_COLUMN,
     PREDICTED_RATE_COLUMN,
@@ -109,3 +110,121 @@ class StatisticsService:
             {"label": str(row[COL_REGION]), "value": float(row["_rate"])}
             for _, row in grouped.iterrows()
         ]
+
+    @staticmethod
+    def filter_records(
+        df: pd.DataFrame,
+        region: str | None = None,
+        year: int | None = None,
+        region_query: str = "",
+        crime_type_query: str = "",
+        sort_by: str = "",
+        ascending: bool = False,
+    ) -> pd.DataFrame:
+        filtered = df.copy()
+
+        if region and COL_REGION in filtered.columns:
+            filtered = filtered[filtered[COL_REGION].astype(str) == str(region)]
+
+        if year is not None and COL_YEAR in filtered.columns:
+            years = pd.to_numeric(filtered[COL_YEAR], errors="coerce")
+            filtered = filtered[years == int(year)]
+
+        if region_query and COL_REGION in filtered.columns:
+            filtered = filtered[
+                filtered[COL_REGION].astype(str).str.contains(region_query, case=False, na=False)
+            ]
+
+        if crime_type_query and COL_CRIME_TYPE in filtered.columns:
+            filtered = filtered[
+                filtered[COL_CRIME_TYPE]
+                .astype(str)
+                .str.contains(crime_type_query, case=False, na=False)
+            ]
+
+        if sort_by in filtered.columns:
+            sort_values = pd.to_numeric(filtered[sort_by], errors="coerce")
+            filtered = (
+                filtered.assign(_sort_value=sort_values)
+                .sort_values("_sort_value", ascending=ascending, na_position="last")
+                .drop(columns=["_sort_value"])
+            )
+
+        return filtered
+
+    @staticmethod
+    def available_regions(df: pd.DataFrame) -> list[str]:
+        if COL_REGION not in df.columns:
+            return []
+        return sorted(str(value) for value in df[COL_REGION].dropna().unique())
+
+    @staticmethod
+    def available_years(df: pd.DataFrame) -> list[int]:
+        if COL_YEAR not in df.columns:
+            return []
+        years = pd.to_numeric(df[COL_YEAR], errors="coerce").dropna().astype(int)
+        return sorted(years.unique().tolist())
+
+    @staticmethod
+    def region_rate_map_data(
+        df: pd.DataFrame,
+        year: int | None = None,
+    ) -> list[dict[str, float | str]]:
+        rate_column = StatisticsService._rate_column(df)
+        if rate_column is None or COL_REGION not in df.columns:
+            return []
+
+        filtered = StatisticsService.filter_records(df, year=year)
+        grouped = (
+            filtered.assign(_rate=pd.to_numeric(filtered[rate_column], errors="coerce"))
+            .dropna(subset=["_rate"])
+            .groupby(COL_REGION, as_index=False)["_rate"]
+            .mean()
+            .sort_values("_rate", ascending=False)
+        )
+
+        return [
+            {"region": str(row[COL_REGION]), "crime_rate": float(row["_rate"])}
+            for _, row in grouped.iterrows()
+        ]
+
+    @staticmethod
+    def yearly_rate_trend(
+        df: pd.DataFrame,
+        region: str | None = None,
+    ) -> list[dict[str, float | int]]:
+        rate_column = StatisticsService._rate_column(df)
+        if rate_column is None or COL_YEAR not in df.columns:
+            return []
+
+        filtered = StatisticsService.filter_records(df, region=region)
+        grouped = (
+            filtered.assign(
+                _year=pd.to_numeric(filtered[COL_YEAR], errors="coerce"),
+                _rate=pd.to_numeric(filtered[rate_column], errors="coerce"),
+            )
+            .dropna(subset=["_year", "_rate"])
+            .groupby("_year", as_index=False)["_rate"]
+            .mean()
+            .sort_values("_year")
+        )
+
+        return [
+            {"year": int(row["_year"]), "crime_rate": float(row["_rate"])}
+            for _, row in grouped.iterrows()
+        ]
+
+    @staticmethod
+    def table_columns(df: pd.DataFrame) -> list[str]:
+        preferred = [
+            COL_YEAR,
+            "데이터_구분",
+            COL_REGION,
+            COL_CRIME_TYPE,
+            COL_INCIDENTS,
+            COL_POPULATION,
+            COL_CRIME_RATE,
+            PREDICTED_INCIDENTS_COLUMN,
+            PREDICTED_RATE_COLUMN,
+        ]
+        return [column for column in preferred if column in df.columns]

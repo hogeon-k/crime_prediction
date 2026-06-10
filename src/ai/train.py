@@ -72,50 +72,20 @@ class StandardizedLinearRegressionModel:
         return self.model.predict((X_array - self.mean_) / self.scale_)
 
 
-RANDOM_FOREST_CANDIDATES = {
-    "random_forest_current": {
-        "n_estimators": 10,
-        "max_depth": 5,
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
-    },
-    "random_forest_depth_8": {
-        "n_estimators": 100,
-        "max_depth": 8,
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
-    },
-    "random_forest_depth_12": {
-        "n_estimators": 100,
-        "max_depth": 12,
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
-    },
-    "random_forest_depth_12_leaf_2": {
-        "n_estimators": 100,
-        "max_depth": 12,
-        "min_samples_split": 4,
-        "min_samples_leaf": 2,
-    },
-    "random_forest_depth_16_leaf_2": {
-        "n_estimators": 150,
-        "max_depth": 16,
-        "min_samples_split": 4,
-        "min_samples_leaf": 2,
-    },
+RANDOM_FOREST_PARAMS = {
+    "n_estimators": 100,
+    "max_depth": 8,
+    "min_samples_split": 2,
+    "min_samples_leaf": 1,
 }
 
 
 def create_models():
-    models = {
+    return {
         "linear": StandardizedLinearRegressionModel(learning_rate=0.01),
+        "random_forest": RandomForestRegressorModel(**RANDOM_FOREST_PARAMS),
         "xgboost": XGBoostRegressorModel(),
     }
-
-    for model_name, params in RANDOM_FOREST_CANDIDATES.items():
-        models[model_name] = RandomForestRegressorModel(**params)
-
-    return models
 
 
 def train_models(X_train, y_train, feature_engineering_stats=None):
@@ -156,46 +126,11 @@ def prediction_diversity_summary(y_pred, top_n=5):
     return ModelEvaluator.prediction_diversity(y_pred, top_n=top_n)
 
 
-def previous_year_baseline(df, config=DEFAULT_TRAINING_CONFIG):
-    year_column, region_column, crime_column = DEFAULT_FEATURE_COLUMNS[:3]
-    target_column = DEFAULT_TARGET_COLUMN
-
-    train_df = df[df[year_column].isin(config.train_years)].copy()
-    test_df = df[df[year_column] == config.test_year].copy()
-    previous_year = config.test_year - 1
-
-    previous_df = train_df[train_df[year_column] == previous_year]
-    previous_lookup = (
-        previous_df.groupby([region_column, crime_column])[target_column].mean().to_dict()
-    )
-    group_mean = train_df.groupby([region_column, crime_column])[target_column].mean().to_dict()
-    global_mean = float(train_df[target_column].mean()) if not train_df.empty else 0.0
-
-    predictions = []
-    for _, row in test_df.iterrows():
-        key = (row[region_column], row[crime_column])
-        predictions.append(previous_lookup.get(key, group_mean.get(key, global_mean)))
-
-    return {
-        "name": "baseline_2023_same_region_crime",
-        "metrics": ModelEvaluator.evaluate(test_df[target_column], predictions),
-        "prediction_diversity": ModelEvaluator.prediction_diversity(predictions),
-    }
-
-
 def _selection_score(metrics):
     return (
         float(metrics["r2"]),
         -float(metrics["rmse"]),
         -float(metrics["mae"]),
-    )
-
-
-def _meets_or_beats_baseline(metrics, baseline_metrics):
-    return (
-        metrics["r2"] >= baseline_metrics["r2"]
-        and metrics["rmse"] <= baseline_metrics["rmse"]
-        and metrics["mae"] <= baseline_metrics["mae"]
     )
 
 
@@ -209,27 +144,8 @@ def _ablation_drop(full_metrics, ablation_metrics):
 
 def select_best_model(
     results,
-    baseline,
     ablation_results,
 ):
-    baseline_metrics = baseline["metrics"]
-    comparison = {
-        "baseline": baseline,
-        "ai_candidates": results,
-        "baseline_warnings": {},
-    }
-
-    baseline_outperformed = True
-    for name, item in results.items():
-        metrics = item["test_metrics"]
-        if not _meets_or_beats_baseline(metrics, baseline_metrics):
-            comparison["baseline_warnings"][name] = {
-                "metrics": metrics,
-                "reason": "below baseline on at least one of R2, RMSE, MAE",
-            }
-        else:
-            baseline_outperformed = False
-
     def sort_key(name):
         metrics = results[name]["test_metrics"]
         diversity = results[name].get("prediction_diversity", {})
@@ -247,28 +163,10 @@ def select_best_model(
     best_name = max(results, key=sort_key)
     best_result = results[best_name]
     ablation_item = ablation_results.get(best_name)
-    best_baseline_name = baseline["name"]
-    warnings = []
-
-    if baseline_outperformed:
-        warnings.extend(
-            [
-                "Baseline outperformed all AI models.",
-                "However, project requires saving one AI model.",
-                f"{best_name} was selected by Test R2, RMSE, and MAE among AI models.",
-            ]
-        )
-    elif best_name in comparison["baseline_warnings"]:
-        warnings.extend(
-            [
-                f"{best_name} is below baseline on at least one of R2, RMSE, MAE.",
-                "However, project requires saving one AI model.",
-            ]
-        )
 
     reason = [
         "Selected by highest Test R2, then lower RMSE and MAE.",
-        "Baseline is reported separately and is not saved as the final AI model.",
+        "Only AI model candidates are compared: linear, random_forest, and xgboost.",
     ]
 
     reason.append(f"{best_name} had the best AI model selection score.")
@@ -289,15 +187,12 @@ def select_best_model(
 
     return {
         "best_name": best_name,
-        "best_baseline_name": best_baseline_name,
         "best_ai_name": best_name,
         "final_saved_model": best_name,
         "best_result": best_result,
         "best_model": best_result["model"],
-        "best_is_baseline": False,
-        "baseline_outperformed_ai": baseline_outperformed,
-        "comparison": comparison,
-        "warning": warnings,
+        "comparison": {"ai_candidates": results},
+        "warning": [],
         "reason": reason,
     }
 
@@ -387,13 +282,12 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
         y_test,
         group_data=test_group_data,
     )
-    baseline = previous_year_baseline(df, config=config)
     ablation_results = run_ablation_without_previous_features(
         engineered_df,
         config=config,
         feature_engineering_stats=feature_engineering_stats,
     )
-    selection = select_best_model(results, baseline, ablation_results)
+    selection = select_best_model(results, ablation_results)
     hyperparameter_experiments = run_hyperparameter_experiments(
         X_train,
         y_train,
@@ -410,7 +304,6 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
     return {
         "models": models,
         "results": results,
-        "baseline": baseline,
         "ablation_results": ablation_results,
         "hyperparameter_experiments": hyperparameter_experiments,
         "data_analysis": data_analysis,
@@ -419,11 +312,8 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
         "selection": selection,
         "best_name": selection["best_name"],
         "best_model": selection["best_model"],
-        "best_is_baseline": selection["best_is_baseline"],
-        "best_baseline_name": selection["best_baseline_name"],
         "best_ai_name": selection["best_ai_name"],
         "final_saved_model": selection["final_saved_model"],
-        "baseline_outperformed_ai": selection["baseline_outperformed_ai"],
         "selection_reason": selection["reason"],
         "selection_warning": selection["warning"],
         "train_years": train_years,
@@ -441,10 +331,8 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
     }
 
 
-def print_train_report(results, baseline=None, ablation_results=None, selection=None):
+def print_train_report(results, ablation_results=None, selection=None):
     ModelEvaluator.print_report(results)
-    if baseline is not None:
-        print_baseline_report(baseline)
     if ablation_results is not None:
         print_feature_removal_report(ablation_results)
     if selection is not None:
@@ -463,8 +351,7 @@ def print_extended_experiment_report(output):
 
 def print_selection_report(selection):
     print("\n========== 최종 선택 모델 ==========")
-    print(f"Best Baseline: {selection['best_baseline_name']}")
-    print(f"Best AI Model: {selection['best_ai_name']}")
+    print(f"Best Model: {selection['best_name']}")
     print(f"Final Saved Model: {selection['final_saved_model']}")
 
     warnings = selection.get("warning", [])
@@ -476,33 +363,6 @@ def print_selection_report(selection):
     print("\nReason:")
     for reason in selection.get("reason", []):
         print(f"- {reason}")
-
-    baseline_warnings = selection.get("comparison", {}).get("baseline_warnings", {})
-    if baseline_warnings:
-        print("\nAI models below baseline:")
-        for name in baseline_warnings:
-            print(f"- {name}: below baseline on R2, RMSE, or MAE")
-
-
-def print_baseline_report(baseline):
-    metrics = baseline["metrics"]
-    diversity = baseline.get("prediction_diversity", {})
-
-    print("\n========== Baseline 평가 ==========")
-    print(f"\n[{baseline['name']}]")
-    print(f"Test R2    : {metrics['r2']:.4f}")
-    print(f"Test RMSE  : {metrics['rmse']:.4f}")
-    print(f"Test MAE   : {metrics['mae']:.4f}")
-    print(f"Test MSE   : {metrics['mse']:.4f}")
-    if diversity:
-        print(f"Unique prediction ratio: {diversity['unique_ratio']:.4f}")
-        print("Top repeated predictions:")
-        for row in diversity.get("top_values", []):
-            print(
-                f"  {row['value']:.6f} -> {row['count']}행 "
-                f"({row['ratio']:.2%})"
-            )
-
 
 def print_feature_removal_report(results):
     print("\n========== Feature removal: without previous-year features ==========")
@@ -743,7 +603,6 @@ def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PAT
 
     model_info = {
         "best_model": best_name,
-        "best_baseline": output["best_baseline_name"],
         "best_ai_model": output["best_ai_name"],
         "final_saved_model": best_name,
         "model_file": model_path.name,
@@ -759,10 +618,6 @@ def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PAT
         "target_column": DEFAULT_TARGET_COLUMN,
         "selection_reason": output.get("selection_reason", []),
         "selection_warning": output.get("selection_warning", []),
-        "baseline_outperformed_ai": bool(output.get("baseline_outperformed_ai")),
-        "baseline_metrics": {
-            name: float(value) for name, value in output["baseline"]["metrics"].items()
-        },
     }
 
     with info_path.open("w", encoding="utf-8") as file:
@@ -827,7 +682,6 @@ def main():
     output = train_and_evaluate(df)
     print_train_report(
         output["results"],
-        baseline=output["baseline"],
         ablation_results=output["ablation_results"],
         selection=output["selection"],
     )

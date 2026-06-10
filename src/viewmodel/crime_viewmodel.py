@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 import pandas as pd
@@ -10,6 +11,7 @@ from model.excel_model import (
     UploadParams,
 )
 from services.ai_service import AIService
+from services.analysis_data_service import AnalysisDataService
 from services.crime_service import CrimeService
 from services.dummy_generator import DataExporter
 from services.excel_pipeline import run_excel_pipeline
@@ -23,13 +25,18 @@ class CrimeViewModel:
         callback: Callable[[CrimeState], None],
         service: CrimeService | None = None,
         ai_service: AIService | None = None,
+        analysis_data_service: AnalysisDataService | None = None,
         statistics_service: StatisticsService | None = None,
     ) -> None:
         self._callback = callback
         self._service = service or CrimeService()
         self._ai_service = ai_service or AIService()
+        self._analysis_data_service = analysis_data_service or AnalysisDataService()
         self._statistics_service = statistics_service or StatisticsService()
         self.state = CrimeState()
+        self.selected_region: str | None = None
+        self.selected_year: int | None = None
+        self.analysis_messages: list[str] = []
 
     def process(
         self,
@@ -186,6 +193,63 @@ class CrimeViewModel:
     def save_dataframe(self, df: pd.DataFrame, path: str):
         return DataExporter.save_to_csv(df, path)
 
+    def prediction_result_path(self, year: int) -> Path:
+        return self._analysis_data_service.prediction_result_path(year)
+
+    def load_dataframe_for_analysis(self, path: str | Path) -> pd.DataFrame | None:
+        self.state = CrimeState(status=ProcessStatus.RUNNING, current_step="분석 데이터 로드")
+        self._callback(self.state)
+
+        try:
+            input_path = Path(path)
+            if not input_path.exists():
+                raise FileNotFoundError(f"분석할 파일을 찾을 수 없습니다: {input_path}")
+            if input_path.suffix.lower() == ".csv":
+                df = pd.read_csv(input_path)
+            elif input_path.suffix.lower() in (".xlsx", ".xls"):
+                df = pd.read_excel(input_path)
+            else:
+                raise ValueError("지원하지 않는 파일 형식입니다. csv, xlsx, xls 파일만 사용할 수 있습니다.")
+        except Exception as exc:
+            self._set_failed("분석 데이터 로드", str(exc))
+            return None
+
+        self.state.status = ProcessStatus.SUCCESS
+        self.state.final_data = df
+        self._callback(self.state)
+        return df
+
+    def load_actual_analysis_data(self) -> pd.DataFrame | None:
+        return self._load_analysis_data("실제 데이터 로드", self._analysis_data_service.load_actual_analysis_data)
+
+    def load_prediction_results_by_year(self, years: list[int]) -> pd.DataFrame | None:
+        return self._load_analysis_data(
+            "예측 결과 로드",
+            lambda: self._analysis_data_service.load_prediction_results_by_year(years),
+        )
+
+    def load_combined_actual_prediction_data(self) -> pd.DataFrame | None:
+        return self._load_analysis_data(
+            "실제+예측 데이터 통합 로드",
+            self._analysis_data_service.load_combined_actual_prediction_data,
+        )
+
+    def get_available_prediction_years(self) -> list[int]:
+        return self._analysis_data_service.get_available_prediction_years()
+
+    def get_yearly_crime_rate_summary(self) -> pd.DataFrame:
+        if self.state.final_data is None:
+            return pd.DataFrame()
+        return self._analysis_data_service.get_yearly_crime_rate_summary(self.state.final_data)
+
+    def set_region_year_selection(
+        self,
+        region: str | None = None,
+        year: int | None = None,
+    ) -> None:
+        self.selected_region = region or None
+        self.selected_year = year
+
     def get_prediction_summary(self) -> dict[str, float | int | None]:
         if self.state.final_data is None:
             return {}
@@ -205,6 +269,79 @@ class CrimeViewModel:
         if self.state.final_data is None:
             return []
         return self._statistics_service.top_region_by_crime_rate(self.state.final_data)
+
+    def get_available_regions(self) -> list[str]:
+        if self.state.final_data is None:
+            return []
+        return self._statistics_service.available_regions(self.state.final_data)
+
+    def get_available_years(self) -> list[int]:
+        if self.state.final_data is None:
+            return []
+        return self._statistics_service.available_years(self.state.final_data)
+
+    def get_filtered_records(
+        self,
+        region_query: str = "",
+        crime_type_query: str = "",
+        sort_by: str = "",
+        ascending: bool = False,
+    ) -> pd.DataFrame:
+        if self.state.final_data is None:
+            return pd.DataFrame()
+        return self._statistics_service.filter_records(
+            self.state.final_data,
+            region=self.selected_region,
+            year=self.selected_year,
+            region_query=region_query,
+            crime_type_query=crime_type_query,
+            sort_by=sort_by,
+            ascending=ascending,
+        )
+
+    def get_region_rate_map_data(self) -> list[dict[str, float | str]]:
+        if self.state.final_data is None:
+            return []
+        return self._statistics_service.region_rate_map_data(
+            self.state.final_data,
+            year=self.selected_year,
+        )
+
+    def get_yearly_rate_trend(self) -> list[dict[str, float | int]]:
+        if self.state.final_data is None:
+            return []
+        return self._statistics_service.yearly_rate_trend(
+            self.state.final_data,
+            region=self.selected_region,
+        )
+
+    def get_table_columns(self) -> list[str]:
+        if self.state.final_data is None:
+            return []
+        return self._statistics_service.table_columns(self.state.final_data)
+
+    def get_model_performance_rows(self) -> list[dict[str, float | str | None]]:
+        return self._ai_service.get_model_performance_rows()
+
+    def get_model_performance_summary(self) -> dict[str, float | str | None]:
+        return self._ai_service.get_model_performance_summary()
+
+    def _load_analysis_data(self, step: str, loader) -> pd.DataFrame | None:
+        self.state = CrimeState(status=ProcessStatus.RUNNING, current_step=step)
+        self._callback(self.state)
+        self.analysis_messages = []
+
+        try:
+            df = loader()
+        except Exception as exc:
+            self._set_failed(step, str(exc))
+            return None
+
+        self.analysis_messages = list(self._analysis_data_service.last_messages)
+        self.state.status = ProcessStatus.SUCCESS
+        self.state.final_data = df
+        self._callback(self.state)
+        return df
 
     def _replace_state(self, state: CrimeState) -> None:
         self.state = state

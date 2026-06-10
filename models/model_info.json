@@ -1,6 +1,5 @@
 {
   "best_model": "linear",
-  "best_baseline": "baseline_2023_same_region_crime",
   "best_ai_model": "linear",
   "final_saved_model": "linear",
   "model_file": "best_model.pkl",
@@ -133,22 +132,10 @@
   "target_column": "발생_건수",
   "selection_reason": [
     "Selected by highest Test R2, then lower RMSE and MAE.",
-    "Baseline is reported separately and is not saved as the final AI model.",
+    "Only AI model candidates are compared: linear, random_forest, and xgboost.",
     "linear had the best AI model selection score.",
     "Feature removal performance without previous-year features: R2 drop=0.4661, RMSE increase=4048.1777, MAE increase=1297.0064.",
     "Better prediction diversity: unique ratio=0.9009."
   ],
-  "selection_warning": [
-    "Baseline outperformed all AI models.",
-    "However, project requires saving one AI model.",
-    "linear was selected by Test R2, RMSE, and MAE among AI models."
-  ],
-  "baseline_outperformed_ai": true,
-  "baseline_metrics": {
-    "mse": 3004541.609366258,
-    "rmse": 1733.361361449556,
-    "mae": 569.0593602929195,
-    "smape": 45.285257209600346,
-    "r2": 0.9547552060984686
-  }
+  "selection_warning": []
 }

@@ -54,3 +54,45 @@ def test_top_region_by_crime_rate() -> None:
     rows = StatisticsService.top_region_by_crime_rate(make_prediction_result(), n=1)
 
     assert rows == [{"label": "서울", "value": 2.2}]
+
+
+def test_filter_records_by_region_year_and_sort() -> None:
+    filtered = StatisticsService.filter_records(
+        make_prediction_result(),
+        region="서울",
+        year=2025,
+        crime_type_query="절도",
+        sort_by=PREDICTED_INCIDENTS_COLUMN,
+    )
+
+    assert len(filtered) == 1
+    assert filtered.iloc[0][PREDICTED_INCIDENTS_COLUMN] == 100.0
+
+
+def test_region_rate_map_data() -> None:
+    rows = StatisticsService.region_rate_map_data(make_prediction_result(), year=2025)
+
+    assert rows == [
+        {"region": "서울", "crime_rate": 2.2},
+        {"region": "부산", "crime_rate": 1.5},
+    ]
+
+
+def test_yearly_rate_trend() -> None:
+    df = pd.concat(
+        [
+            make_prediction_result(),
+            make_prediction_result().assign(
+                연도=2026,
+                **{PREDICTED_RATE_COLUMN: [2.0, 4.0, 1.0]},
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    rows = StatisticsService.yearly_rate_trend(df, region="서울")
+
+    assert rows == [
+        {"year": 2025, "crime_rate": 2.2},
+        {"year": 2026, "crime_rate": 3.0},
+    ]

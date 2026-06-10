@@ -1,6 +1,6 @@
 import pandas as pd
 
-from ai.train import RANDOM_FOREST_CANDIDATES, print_train_report, train_and_evaluate
+from ai.train import print_train_report, train_and_evaluate
 
 
 def make_sample_data():
@@ -22,17 +22,15 @@ def test_train_and_evaluate():
     df = make_sample_data()
     output = train_and_evaluate(df)
 
-    expected_models = {"linear", "xgboost", *RANDOM_FOREST_CANDIDATES}
+    expected_models = {"linear", "random_forest", "xgboost"}
 
     assert set(output["models"]) == expected_models
     assert set(output["results"]) == expected_models
-    assert output["baseline"]["name"] == "baseline_2023_same_region_crime"
+    assert "baseline" not in output
     assert output["best_name"] in output["models"]
     assert output["best_ai_name"] in output["models"]
     assert output["final_saved_model"] in output["models"]
-    assert output["final_saved_model"] == "random_forest_depth_8"
     assert output["best_model"] is output["models"][output["final_saved_model"]]
-    assert output["best_is_baseline"] is False
     assert output["selection_reason"]
 
     for item in output["results"].values():

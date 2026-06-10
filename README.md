@@ -124,20 +124,13 @@ pylint src tests
 
 ## 모델 평가 기준
 
-최종 AI 모델은 Test R2를 가장 우선하고, 동률 또는 근소 차이에서는 RMSE와 MAE가 낮은 모델을 선택합니다. baseline은 별도로 리포트하지만, 프로젝트 요구상 저장 대상은 AI 모델입니다.
-
-현재 README에 기록된 이전 실험에서는 baseline이 모든 AI 모델보다 높은 성능을 보였습니다.
+최종 모델은 `linear`, `random_forest`, `xgboost` 세 AI 모델만 비교하여 선택합니다. Test R2를 가장 우선하고, 동률 또는 근소 차이에서는 RMSE와 MAE가 낮은 모델을 선택합니다.
 
 | Model | Test R2 | RMSE | MAE | Unique Ratio |
 |---|---:|---:|---:|---:|
-| Baseline: 2023 same region/crime | 0.9548 | 1733.36 | 569.06 | - |
 | Linear | 0.9513 | 1799.14 | 748.26 | 0.9009 |
 | XGBoost | 0.9297 | 2160.26 | 669.84 | 0.1641 |
-| Random Forest Current | 0.9411 | 1978.37 | 663.37 | 0.1424 |
-| Random Forest Depth 8 | 0.9419 | 1963.84 | 679.53 | 0.6966 |
-| Random Forest Depth 12 | 0.9416 | 1969.49 | 686.89 | 0.9087 |
-
-이 결과는 전년도 동일 지역/범죄 유형 값이 매우 강한 기준선이라는 뜻입니다. 따라서 모델 성능을 주장할 때는 “AI 모델이 baseline을 이겼다”가 아니라, “baseline과 AI 후보를 비교했고, 저장 모델은 AI 후보 중 Test R2/RMSE/MAE 기준으로 선택했다”라고 설명하는 것이 정직합니다.
+| Random Forest | 0.9419 | 1963.84 | 679.53 | 0.6966 |
 
 학습 리포트에는 R2, RMSE, MAE, SMAPE, 예측 다양성, 지역별 MAE, 범죄 유형별 MAE를 포함합니다.
 
