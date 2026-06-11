@@ -252,6 +252,13 @@ def _normalize_crime_region_to_sido(series: pd.Series) -> pd.Series:
     return _normalize_sido(series)
 
 
+def normalize_crime_type(value) -> str:
+    """연도별 원천 파일의 공백/구분기호 차이를 같은 범죄유형명으로 통일합니다."""
+    if pd.isna(value):
+        return value
+    return re.sub(r"[\s/·ㆍ]+", "", str(value).strip())
+
+
 def _is_supported_crime_region_column(column: str) -> bool:
     normalized = str(column).strip().replace(" ", "")
     if normalized in _EXCLUDED_CRIME_REGION_COLUMNS:
@@ -341,7 +348,7 @@ class CrimeService:
             )
 
             crime = crime[~crime["지역"].str.startswith("외국")].copy()
-            crime["범죄_유형"] = crime["범죄중분류"]
+            crime["범죄_유형"] = crime["범죄중분류"].map(normalize_crime_type)
             crime["연도"] = year
             crime["지역"] = _normalize_crime_region_to_sido(crime["지역"])
             crime["발생_건수"] = pd.to_numeric(crime["발생_건수"], errors="coerce")

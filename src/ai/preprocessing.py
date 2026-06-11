@@ -166,6 +166,8 @@ def _normalize_crime_value(value, known_crime_types: set[str]) -> str:
         f"{normalized}범죄",
         normalized.replace("/", " "),
         normalized.replace("/", ""),
+        normalized.replace("·", ""),
+        normalized.replace("ㆍ", ""),
         normalized.replace(" ", ""),
     ]
     for candidate in candidates:

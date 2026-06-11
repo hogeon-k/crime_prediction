@@ -13,7 +13,11 @@ import pytest
 import _path_setup  # pylint: disable=unused-import
 from ai.train import get_default_government_files
 from model.excel_model import UploadParams
-from services.crime_service import CrimeService, _normalize_crime_region_to_sido
+from services.crime_service import (
+    CrimeService,
+    _normalize_crime_region_to_sido,
+    normalize_crime_type,
+)
 from services.excel_pipeline import run_excel_pipeline
 
 
@@ -95,6 +99,30 @@ def test_government_region_normalization() -> None:
     normalized = _normalize_crime_region_to_sido(regions)
     assert normalized.tolist() == ["서울", "서울", "서울", "경기"]
     print("  PASS")
+
+
+def test_crime_type_spacing_and_separators_are_normalized() -> None:
+    values = [
+        "기타 강간 강제추행등",
+        "기타 강간/강제추행등",
+        "기타강간강제추행등",
+        "문서 인장",
+        "문서/인장",
+        "문서인장",
+        "체포/감금",
+        "체포감금",
+    ]
+
+    assert [normalize_crime_type(value) for value in values] == [
+        "기타강간강제추행등",
+        "기타강간강제추행등",
+        "기타강간강제추행등",
+        "문서인장",
+        "문서인장",
+        "문서인장",
+        "체포감금",
+        "체포감금",
+    ]
 
 
 def test_government_merge_fails_when_population_missing(tmp_path) -> None:
