@@ -9,9 +9,10 @@ MVVM 패턴 실행 진입점
 
 파일 규칙 (data/ 폴더에 넣기만 하면 자동 인식):
     범죄 데이터 : crime_region_20XX.csv
-    인구 데이터 : pop_20XX.csv
+    인구 데이터 : 2015-2025_pop.csv 같은 통합 파일 또는 pop_20XX.csv
 """
 
+import re
 import sys
 from glob import glob
 from pathlib import Path
@@ -29,7 +30,13 @@ def collect_files() -> tuple[list[str], list[str]]:
     - 연도 오름차순 정렬 (파이프라인 내부에서 연도 컬럼으로 구분)
     """
     crime_files = sorted(glob(str(DATA_DIR / "crime_region_20*.csv")))
-    pop_files = sorted(glob(str(DATA_DIR / "pop_20*.csv")))
+    wide_pop_files = sorted(DATA_DIR.glob("*pop*.csv"))
+    wide_pop_files = [
+        path
+        for path in wide_pop_files
+        if not path.name.startswith("pop_20") and re.search(r"20\d{2}.*20\d{2}", path.stem)
+    ]
+    pop_files = [str(path) for path in wide_pop_files] or sorted(glob(str(DATA_DIR / "pop_20*.csv")))
     return crime_files, pop_files
 
 

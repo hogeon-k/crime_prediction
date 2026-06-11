@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 import _path_setup  # pylint: disable=unused-import
+from ai.train import get_default_government_files
 from model.excel_model import UploadParams
 from services.crime_service import CrimeService, _normalize_crime_region_to_sido
 from services.excel_pipeline import run_excel_pipeline
@@ -122,8 +123,7 @@ def test_government_merge_fails_when_population_missing(tmp_path) -> None:
 
 def test_government_pipeline_if_data_exists() -> None:
     print("\n===== 4. run_excel_pipeline (government) =====")
-    crime_files = sorted(DATA_DIR.glob("crime_region_20*.csv"))
-    pop_files = sorted(DATA_DIR.glob("pop_20*.csv"))
+    crime_files, pop_files = get_default_government_files()
     if not crime_files or not pop_files:
         print("  SKIP (no government csv in data/)")
         return

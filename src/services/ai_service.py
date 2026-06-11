@@ -135,7 +135,6 @@ class AIService:
                 "rmse": None,
                 "mae": None,
                 "mse": None,
-                "smape": None,
                 "inference_seconds": self.last_inference_seconds,
                 "cpu_usage_percent": self.last_cpu_usage_percent,
             }
@@ -151,7 +150,6 @@ class AIService:
                 "rmse": None,
                 "mae": None,
                 "mse": None,
-                "smape": None,
                 "inference_seconds": self.last_inference_seconds,
                 "cpu_usage_percent": self.last_cpu_usage_percent,
             }
@@ -164,7 +162,6 @@ class AIService:
             "rmse": metrics.get("rmse"),
             "mae": metrics.get("mae"),
             "mse": metrics.get("mse"),
-            "smape": metrics.get("smape"),
             "inference_seconds": self.last_inference_seconds,
             "cpu_usage_percent": self.last_cpu_usage_percent,
         }

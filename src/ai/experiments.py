@@ -14,8 +14,10 @@ from ai.preprocessing import (
     ENGINEERED_FEATURE_COLUMNS,
     add_feature_engineering,
     build_feature_engineering_stats,
+    feature_available_years,
     split_train_test,
 )
+from ai.linear.linear_model import LinearRegressionModel
 from ai.random_forest.random_forest import RandomForestRegressorModel
 from ai.xgboost.xgb_model import XGBoostRegressorModel
 from constants import (
@@ -116,6 +118,31 @@ class ExperimentCandidate:
     family: str
     params: dict
     factory: Callable[[], object]
+
+
+class _StandardizedLinearRegressionModel:
+    def __init__(self, learning_rate=0.01, epochs=1000):
+        self.model = LinearRegressionModel(learning_rate=learning_rate, epochs=epochs)
+        self.mean_ = None
+        self.scale_ = None
+
+    @staticmethod
+    def _as_array(X):
+        if isinstance(X, pd.DataFrame):
+            return X.to_numpy(dtype=float)
+        return np.asarray(X, dtype=float)
+
+    def fit(self, X, y):
+        X_array = self._as_array(X)
+        self.mean_ = X_array.mean(axis=0)
+        self.scale_ = X_array.std(axis=0)
+        self.scale_[self.scale_ == 0] = 1.0
+        self.model.fit((X_array - self.mean_) / self.scale_, y)
+        return self
+
+    def predict(self, X):
+        X_array = self._as_array(X)
+        return self.model.predict((X_array - self.mean_) / self.scale_)
 
 
 def _resolve_max_features(value, n_features: int):
@@ -374,12 +401,13 @@ def run_year_walk_forward_validation(
     df: pd.DataFrame,
     config=DEFAULT_TRAINING_CONFIG,
 ) -> dict:
-    years = sorted(int(year) for year in pd.Series(df[COL_YEAR]).dropna().unique())
+    years = feature_available_years(df, config=config)
     folds = []
+    min_train_year_count = 2
 
-    for fold_index, validation_year in enumerate(years[1:], start=1):
+    for fold_index, validation_year in enumerate(years[min_train_year_count:], start=1):
         train_years = tuple(year for year in years if year < validation_year)
-        if not train_years:
+        if len(train_years) < min_train_year_count:
             continue
 
         train_source_df = df[df[COL_YEAR].isin(train_years)]
@@ -392,6 +420,7 @@ def run_year_walk_forward_validation(
         )
 
         candidates = {
+            "linear": _StandardizedLinearRegressionModel(learning_rate=0.01),
             "random_forest": RandomForestRegressorModel(
                 n_estimators=100,
                 max_depth=12,
@@ -421,19 +450,35 @@ def run_year_walk_forward_validation(
                     "model": model_name,
                     "train_years": list(train_years),
                     "validation_year": validation_year,
+                    "train_row_count": int(len(y_train)),
+                    "validation_row_count": int(len(y_valid)),
                     "train_r2": float(train_metrics["r2"]),
                     "validation_r2": float(valid_metrics["r2"]),
                     "r2_gap": float(train_metrics["r2"] - valid_metrics["r2"]),
+                    "validation_mse": float(valid_metrics["mse"]),
                     "validation_rmse": float(valid_metrics["rmse"]),
                     "validation_mae": float(valid_metrics["mae"]),
                 }
             )
 
+    averages = {}
+    frame = pd.DataFrame(folds)
+    if not frame.empty:
+        for model_name, group in frame.groupby("model"):
+            averages[model_name] = {
+                "mean_r2": float(group["validation_r2"].mean()),
+                "mean_mse": float(group["validation_mse"].mean()),
+                "mean_rmse": float(group["validation_rmse"].mean()),
+                "mean_mae": float(group["validation_mae"].mean()),
+                "fold_count": int(len(group)),
+            }
+
     return {
         "strategy": (
             "연도 순서가 있는 데이터이므로 일반 K-Fold보다 과거 연도로 학습하고 "
-            "다음 연도를 검증하는 Walk-Forward 검증을 사용한다. 현재 데이터가 "
-            "2022~2024 3개 연도뿐이라 fold 수는 제한적이며, 결과는 보조 근거로 해석한다."
+            "다음 연도를 검증하는 Walk-Forward 검증을 사용한다. 결과는 보조 근거로 해석한다."
         ),
         "folds": folds,
+        "averages": averages,
+        "available_years": years,
     }

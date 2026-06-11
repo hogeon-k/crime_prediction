@@ -1178,7 +1178,6 @@ class SinglePredictionTab(BaseTab):
             f"Test RMSE: {fmt(summary.get('rmse'), 2)}",
             f"Test MAE: {fmt(summary.get('mae'), 2)}",
             f"Test MSE: {fmt(summary.get('mse'), 2)}",
-            f"Test SMAPE: {fmt(summary.get('smape'), 2)}",
             f"추론 시간: {fmt(summary.get('inference_seconds'), 3)}초",
             f"CPU 사용량: {fmt(summary.get('cpu_usage_percent'), 1)}%",
             f"상태: {status}",

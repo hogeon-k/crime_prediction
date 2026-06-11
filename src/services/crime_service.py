@@ -63,6 +63,9 @@ _SIDO_SHORT: dict[str, str] = {
 
 _CRIME_SIDO_NAMES = tuple(_SIDO_SHORT.values())
 _EXCLUDED_CRIME_REGION_COLUMNS = {"기타도시", "도시이외"}
+_WIDE_POP_REGION_COLUMN = "행정구역별(읍면동)"
+_WIDE_POP_ITEM_COLUMN = "항목"
+_WIDE_POP_TOTAL_ITEM = "총인구[명]"
 
 
 def _validate_upload_path(path: Path, allowed_roots: list[Path] | None = None) -> Path:
@@ -222,22 +225,31 @@ def _normalize_region(series: pd.Series) -> pd.Series:
     return series.astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
 
 
-def _normalize_crime_region_to_sido(series: pd.Series) -> pd.Series:
-    """범죄 파일의 시도/시군구 혼합 지역명을 시도 단위로 통일합니다."""
+def _normalize_sido(series: pd.Series) -> pd.Series:
+    """시도 전체명/약칭/시군구 혼합명을 범죄 데이터의 시도 약칭으로 통일합니다."""
     normalized = _normalize_region(series)
 
     def to_sido(region: str) -> str:
+        if region in _SIDO_SHORT:
+            return _SIDO_SHORT[region]
+
         compact = region.replace(" ", "")
-        for sido in _CRIME_SIDO_NAMES:
-            if (
-                region == sido
-                or region.startswith(f"{sido} ")
-                or compact.startswith(sido)
-            ):
-                return sido
+        for full_name, short_name in _SIDO_SHORT.items():
+            if compact.startswith(full_name.replace(" ", "")):
+                return short_name
+        for short_name in _CRIME_SIDO_NAMES:
+            if region == short_name or region.startswith(f"{short_name} "):
+                return short_name
+            if compact.startswith(short_name):
+                return short_name
         return region
 
     return normalized.map(to_sido)
+
+
+def _normalize_crime_region_to_sido(series: pd.Series) -> pd.Series:
+    """범죄 파일의 시도/시군구 혼합 지역명을 시도 단위로 통일합니다."""
+    return _normalize_sido(series)
 
 
 def _is_supported_crime_region_column(column: str) -> bool:
@@ -251,6 +263,7 @@ class CrimeService:
 
     def __init__(self) -> None:
         self._rule = ValidationRule()
+        self.last_merge_report: dict[str, object] = {}
 
     def load_uploaded(self, file_path: str) -> ProcessResult:
         """표준 양식 Excel/CSV 단일 파일 업로드 로드"""
@@ -271,6 +284,7 @@ class CrimeService:
         try:
             crime_df = self._load_crime(crime_files)
             pop_df = self._load_population(pop_files)
+            self.last_merge_report = self._build_merge_report(crime_df, pop_df)
 
             merged = pd.merge(
                 crime_df,
@@ -290,6 +304,7 @@ class CrimeService:
                     "공공데이터 병합 후 인구수 결측이 발생했습니다. "
                     f"범죄/인구 파일의 지역명 또는 연도를 확인하세요. 예시: {examples}"
                 )
+            merged.attrs["preprocessing_report"] = self.last_merge_report
             return ProcessResult(True, "병합 성공", merged)
 
         except Exception as exc:
@@ -354,9 +369,27 @@ class CrimeService:
         for file in pop_files:
             raw = _read_file_safe(file)
 
-            sido_short = raw["시도명"].map(_SIDO_SHORT).fillna(raw["시도명"])
+            if {_WIDE_POP_REGION_COLUMN, _WIDE_POP_ITEM_COLUMN}.issubset(raw.columns):
+                pop = self._load_wide_population(raw)
+                frames.append(pop)
+                continue
+
+            required = {"시도명", "계"}
+            missing = required - set(raw.columns)
+            if missing:
+                raise ValueError(
+                    f"지원하지 않는 인구 파일 구조입니다: {file}. "
+                    f"누락 컬럼: {sorted(missing)}"
+                )
+
+            sido_short = _normalize_sido(raw["시도명"])
 
             연월_col = "기준연월" if "기준연월" in raw.columns else "통계년월"
+            if 연월_col not in raw.columns:
+                raise ValueError(
+                    f"인구 파일에서 연월 컬럼을 찾을 수 없습니다: {file}. "
+                    "기대 컬럼: 기준연월 또는 통계년월"
+                )
             연도 = pd.to_numeric(
                 raw[연월_col].astype(str).str[:4], errors="coerce"
             ).astype("Int64")
@@ -377,7 +410,80 @@ class CrimeService:
             )
             frames.append(pop)
 
-        return pd.concat(frames, ignore_index=True)
+        combined = pd.concat(frames, ignore_index=True)
+        combined = combined[combined["지역"].isin(_CRIME_SIDO_NAMES)].copy()
+        combined["인구수"] = pd.to_numeric(combined["인구수"], errors="coerce")
+        combined = combined.dropna(subset=["지역", "연도", "인구수"])
+        combined["연도"] = combined["연도"].astype("Int64")
+        return pd.DataFrame(
+            combined.groupby(["지역", "연도"], as_index=False)["인구수"].mean()
+        )
+
+    def _load_wide_population(self, raw: pd.DataFrame) -> pd.DataFrame:
+        total = raw[raw[_WIDE_POP_ITEM_COLUMN].astype(str).str.strip() == _WIDE_POP_TOTAL_ITEM].copy()
+        if total.empty:
+            raise ValueError(f"wide 인구 파일에 '{_WIDE_POP_TOTAL_ITEM}' 항목이 없습니다.")
+
+        year_columns = [
+            column
+            for column in total.columns
+            if re.fullmatch(r"\s*20\d{2}\s*년\s*", str(column))
+        ]
+        if not year_columns:
+            raise ValueError("wide 인구 파일에서 'YYYY 년' 형식의 연도 컬럼을 찾을 수 없습니다.")
+
+        pop = total.melt(
+            id_vars=[_WIDE_POP_REGION_COLUMN],
+            value_vars=year_columns,
+            var_name="연도",
+            value_name="인구수",
+        )
+        pop["지역"] = _normalize_sido(pop[_WIDE_POP_REGION_COLUMN])
+        pop["연도"] = pd.to_numeric(
+            pop["연도"].astype(str).str.extract(r"(20\d{2})")[0],
+            errors="coerce",
+        ).astype("Int64")
+        pop["인구수"] = pd.to_numeric(pop["인구수"], errors="coerce")
+        pop = pop[pop["지역"].isin(_CRIME_SIDO_NAMES)].copy()
+        return pop[["지역", "연도", "인구수"]]
+
+    def _build_merge_report(
+        self,
+        crime_df: pd.DataFrame,
+        pop_df: pd.DataFrame,
+    ) -> dict[str, object]:
+        crime_keys = crime_df[["지역", "연도"]].drop_duplicates()
+        pop_keys = pop_df[["지역", "연도"]].drop_duplicates()
+        missing_keys = crime_keys.merge(
+            pop_keys,
+            on=["지역", "연도"],
+            how="left",
+            indicator=True,
+        )
+        missing_keys = missing_keys[missing_keys["_merge"] == "left_only"][["지역", "연도"]]
+
+        return {
+            "crime_year_counts": {
+                int(year): int(count)
+                for year, count in crime_df.groupby("연도").size().sort_index().items()
+            },
+            "population_year_counts": {
+                int(year): int(count)
+                for year, count in pop_keys.groupby("연도").size().sort_index().items()
+            },
+            "crime_regions": sorted(crime_df["지역"].dropna().astype(str).unique().tolist()),
+            "population_regions": sorted(pop_df["지역"].dropna().astype(str).unique().tolist()),
+            "merge_failed_key_count": int(len(missing_keys)),
+            "merge_failed_keys": missing_keys.head(20).to_dict(orient="records"),
+            "crime_missing_values": {
+                column: int(value)
+                for column, value in crime_df.isna().sum().items()
+            },
+            "population_missing_values": {
+                column: int(value)
+                for column, value in pop_df.isna().sum().items()
+            },
+        }
 
     # 컬럼 검증 연도 병합
     def validate(self, df: pd.DataFrame) -> ProcessResult:

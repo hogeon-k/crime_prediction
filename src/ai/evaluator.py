@@ -26,18 +26,6 @@ class ModelEvaluator:
         return np.mean(np.abs(y_true - y_pred))
 
     @staticmethod
-    def smape(y_true, y_pred):
-        y_true = np.array(y_true, dtype=float)
-        y_pred = np.array(y_pred, dtype=float)
-        denominator = np.abs(y_true) + np.abs(y_pred)
-        valid = denominator != 0
-
-        if not np.any(valid):
-            return 0.0
-
-        return float(np.mean(2 * np.abs(y_pred[valid] - y_true[valid]) / denominator[valid]) * 100)
-
-    @staticmethod
     def r2(y_true, y_pred):
         y_true = np.array(y_true, dtype=float)
         y_pred = np.array(y_pred, dtype=float)
@@ -60,7 +48,6 @@ class ModelEvaluator:
             "mse": ModelEvaluator.mse(y_true, y_pred),
             "rmse": ModelEvaluator.rmse(y_true, y_pred),
             "mae": ModelEvaluator.mae(y_true, y_pred),
-            "smape": ModelEvaluator.smape(y_true, y_pred),
             "r2": ModelEvaluator.r2(y_true, y_pred),
         }
 
@@ -178,12 +165,10 @@ class ModelEvaluator:
                 print(f"Train R2   : {train_metrics['r2']:.4f}")
                 print(f"Train RMSE : {train_metrics['rmse']:.4f}")
                 print(f"Train MAE  : {train_metrics['mae']:.4f}")
-                print(f"Train SMAPE: {train_metrics['smape']:.4f}")
                 print(f"Train MSE  : {train_metrics['mse']:.4f}")
             print(f"Test R2    : {test_metrics['r2']:.4f}")
             print(f"Test RMSE  : {test_metrics['rmse']:.4f}")
             print(f"Test MAE   : {test_metrics['mae']:.4f}")
-            print(f"Test SMAPE : {test_metrics['smape']:.4f}")
             print(f"Test MSE   : {test_metrics['mse']:.4f}")
             if diversity:
                 print(f"Unique prediction ratio: {diversity['unique_ratio']:.4f}")

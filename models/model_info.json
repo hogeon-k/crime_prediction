@@ -3,45 +3,44 @@
   "best_ai_model": "linear",
   "final_saved_model": "linear",
   "model_file": "best_model.pkl",
-  "model_sha256": "e47cd180b3ac8eb040a2831e22f8912974660e714c035b812ddfe7a3ca782ada",
+  "model_sha256": "1d27140f0a43931e9cd9365186535b68fe83a53b5834a560f50648781116ae46",
   "metrics": {
-    "mse": 3236909.856847397,
-    "rmse": 1799.1414221365137,
-    "mae": 748.2579824619575,
-    "smape": 86.40027789936039,
-    "r2": 0.9512560189233701
+    "mse": 3199669.849608344,
+    "rmse": 1788.7620997797176,
+    "mae": 700.1258169908533,
+    "r2": 0.9518168087780255
   },
   "prediction_diversity": {
     "row_count": 646,
-    "unique_count": 582,
-    "unique_ratio": 0.9009287925696594,
-    "min": 0.0,
-    "max": 88666.21946173727,
-    "mean": 2942.8167832682807,
-    "std": 7724.56446787185,
+    "unique_count": 595,
+    "unique_ratio": 0.9210526315789473,
+    "min": 64.27671322452989,
+    "max": 84958.30611203879,
+    "mean": 2733.9331993199603,
+    "std": 7194.135059253566,
     "top_values": [
       {
-        "value": 0.0,
-        "count": 14,
-        "ratio": 0.021671826625386997
-      },
-      {
-        "value": 2268.9055221897397,
+        "value": 2426.6891804587563,
         "count": 4,
         "ratio": 0.006191950464396285
       },
       {
-        "value": 2333.281578507914,
+        "value": 2687.920999672772,
         "count": 4,
         "ratio": 0.006191950464396285
       },
       {
-        "value": 2207.7802693537074,
+        "value": 2468.4206654210875,
         "count": 4,
         "ratio": 0.006191950464396285
       },
       {
-        "value": 2215.170945799758,
+        "value": 2400.067501368089,
+        "count": 4,
+        "ratio": 0.006191950464396285
+      },
+      {
+        "value": 2404.6414374330416,
         "count": 4,
         "ratio": 0.006191950464396285
       }
@@ -123,19 +122,72 @@
     ]
   },
   "train_years": [
+    2019,
+    2020,
+    2021,
     2022,
     2023
   ],
   "test_years": [
     2024
   ],
+  "final_train_years": [
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024
+  ],
+  "final_training_row_count": 3876,
+  "raw_years": [
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024
+  ],
+  "feature_available_years": [
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024
+  ],
+  "excluded_years": [
+    2018
+  ],
+  "walk_forward_averages": {
+    "linear": {
+      "mean_r2": 0.9655822256542621,
+      "mean_mse": 1884014.214017394,
+      "mean_rmse": 1340.206199329409,
+      "mean_mae": 535.8062555647737,
+      "fold_count": 4
+    },
+    "random_forest": {
+      "mean_r2": 0.9507481715351758,
+      "mean_mse": 2821322.2058419217,
+      "mean_rmse": 1579.3065293336927,
+      "mean_mae": 528.1269920733372,
+      "fold_count": 4
+    },
+    "xgboost": {
+      "mean_r2": 0.9571407859995886,
+      "mean_mse": 2398569.0365182795,
+      "mean_rmse": 1487.906407482159,
+      "mean_mae": 469.8105288181358,
+      "fold_count": 4
+    }
+  },
   "target_column": "발생_건수",
   "selection_reason": [
-    "Selected by highest Test R2, then lower RMSE and MAE.",
-    "Only AI model candidates are compared: linear, random_forest, and xgboost.",
-    "linear had the best AI model selection score.",
-    "Feature removal performance without previous-year features: R2 drop=0.4661, RMSE increase=4048.1777, MAE increase=1297.0064.",
-    "Better prediction diversity: unique ratio=0.9009."
+    "Selected by highest mean Walk-Forward validation R2, then lower mean RMSE and MAE.",
+    "Hold-out metrics are reported as reference only.",
+    "linear had the best Walk-Forward average validation score."
   ],
   "selection_warning": []
 }

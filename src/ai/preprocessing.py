@@ -16,9 +16,10 @@ from constants import (
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    train_years: tuple[int, ...] = (2022, 2023)
-    test_year: int = 2024
-    valid_years: tuple[int, ...] = tuple(range(2020, 2027))
+    train_years: tuple[int, ...] | None = None
+    test_year: int | None = None
+    exclude_first_year_for_previous_features: bool = True
+    valid_years: tuple[int, ...] = tuple(range(2018, 2027))
 
 
 DEFAULT_TRAINING_CONFIG = TrainingConfig()
@@ -31,6 +32,55 @@ ENGINEERED_FEATURE_COLUMNS = [
     "지역별_평균_발생_건수",
     "범죄유형별_평균_발생_건수",
 ]
+
+
+def sorted_years(df: pd.DataFrame) -> list[int]:
+    years = pd.to_numeric(df[COL_YEAR], errors="coerce").dropna().astype(int)
+    return sorted(years.unique().tolist())
+
+
+def feature_available_years(
+    df: pd.DataFrame,
+    config: TrainingConfig = DEFAULT_TRAINING_CONFIG,
+) -> list[int]:
+    years = sorted_years(df)
+    if config.exclude_first_year_for_previous_features and len(years) > 1:
+        return years[1:]
+    return years
+
+
+def excluded_previous_feature_years(
+    df: pd.DataFrame,
+    config: TrainingConfig = DEFAULT_TRAINING_CONFIG,
+) -> list[int]:
+    years = sorted_years(df)
+    available = set(feature_available_years(df, config=config))
+    return [year for year in years if year not in available]
+
+
+def resolve_train_test_years(
+    df: pd.DataFrame,
+    config: TrainingConfig = DEFAULT_TRAINING_CONFIG,
+) -> tuple[tuple[int, ...], int]:
+    available_years = feature_available_years(df, config=config)
+    if len(available_years) < 2:
+        raise ValueError("학습/테스트 분리를 위해 최소 2개 이상의 사용 가능 연도가 필요합니다.")
+
+    test_year = config.test_year if config.test_year is not None else max(available_years)
+    if test_year not in available_years:
+        raise ValueError(f"테스트 연도 {test_year}가 사용 가능 연도에 없습니다: {available_years}")
+
+    if config.train_years is None:
+        train_years = tuple(year for year in available_years if year < test_year)
+    else:
+        train_years = tuple(year for year in config.train_years if year in available_years)
+
+    if not train_years:
+        raise ValueError(f"테스트 연도 {test_year} 이전 학습 가능 연도가 없습니다.")
+    if any(year >= test_year for year in train_years):
+        raise ValueError(f"Train 연도는 Test 연도보다 과거여야 합니다: train={train_years}, test={test_year}")
+
+    return train_years, int(test_year)
 
 _REGION_ALIASES = {
     "서울특별시": "서울",
@@ -331,9 +381,18 @@ def split_train_test(
     df: pd.DataFrame,
     feature_columns=None,
     target_column: str = DEFAULT_TARGET_COLUMN,
-    train_years: tuple[int, ...] = DEFAULT_TRAIN_YEARS,
-    test_year: int = DEFAULT_TEST_YEAR,
+    train_years: tuple[int, ...] | None = DEFAULT_TRAIN_YEARS,
+    test_year: int | None = DEFAULT_TEST_YEAR,
+    config: TrainingConfig = DEFAULT_TRAINING_CONFIG,
 ):
+    if train_years is None or test_year is None:
+        resolved_train_years, resolved_test_year = resolve_train_test_years(
+            df,
+            config=config,
+        )
+        train_years = resolved_train_years if train_years is None else train_years
+        test_year = resolved_test_year if test_year is None else test_year
+
     train_df = df[df[COL_YEAR].isin(train_years)]
     test_df = df[df[COL_YEAR] == test_year]
 
@@ -373,7 +432,7 @@ def split_by_year(
     연도 기준 분리
 
     예:
-        train = 2022~2023
+        train = years before test_year
         test  = 2024
     """
 

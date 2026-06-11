@@ -6,7 +6,7 @@
 
 - 범죄/인구 데이터 병합 및 전처리
 - 표준 CSV/XLSX 업로드와 정부 원천 데이터 업로드 지원
-- 연도 기준 Train/Test 분리: 기본값 Train 2022~2023, Test 2024
+- 연도 기준 자동 Train/Test 분리: 현재 원본 2018~2024, 전년도 feature 적용 후 Train 2019~2023 / Test 2024
 - Linear Regression, 직접 구현 Random Forest, 직접 구현 XGBoost 비교
 - 전년도 발생 건수, 전년도 범죄율, 지역/범죄유형 평균 feature 생성
 - 예측 결과 CSV/XLSX 저장
@@ -75,17 +75,23 @@ print(result)
 python src/ai/train.py
 ```
 
-학습 리포트에는 기존 모델 비교에 더해 다음 실험이 함께 출력됩니다.
+학습 리포트에는 기존 모델 비교에 더해 다음 정보와 실험이 함께 출력됩니다.
 
+- 원본 데이터 연도 범위, 전년도 feature 생성 후 사용 가능 연도, 제외된 연도
+- 자동 Hold-out 검증: 데이터에 존재하는 최신 연도를 Test로, 그 이전 사용 가능 연도를 Train으로 사용
 - RandomForest 후보군: `n_estimators`, `max_depth`, `min_samples_split`, `min_samples_leaf`, `max_features`
 - XGBoost 후보군: `n_estimators`, `learning_rate`, `max_depth`, `min_samples_split`, `reg_lambda`, `gamma`
 - 각 후보 조합의 Train/Test R2, RMSE, MAE 및 Train/Test R2 gap
 - 발생건수, 인구수, 범죄율 분포와 IQR 기준 이상값 수
 - 지역별, 범죄유형별 발생건수 통계
 - 숫자형 feature와 target 간 상관, split count 기반 importance, permutation importance
-- 연도 기반 Walk-Forward 검증: 2022 -> 2023, 2022~2023 -> 2024
+- 연도 기반 Walk-Forward 검증: 과거 연도로 학습하고 다음 연도를 검증
 
-최종 하이퍼파라미터 선택 기준은 Test R2를 우선 최대화하고, 성능이 유사한 경우 Test RMSE, Test MAE, Train/Test R2 gap 순서로 더 작은 조합을 선택하는 방식입니다. 데이터가 2022~2024년 3개 연도뿐이므로 일반 K-Fold보다 과거 연도로 학습하고 다음 연도를 검증하는 연도 기준 검증을 사용하며, 이 결과는 최종 성능의 확정치가 아니라 일반화 가능성을 점검하는 보조 근거로 해석합니다.
+현재 원본 범죄 데이터 범위는 2018~2024입니다. 전년도 발생건수와 전년도 범죄율 feature를 사용하므로 기본 설정에서는 첫 연도인 2018년을 학습/검증 행에서 제외하고, 실제 사용 가능 범위는 2019~2024가 됩니다. 따라서 현재 데이터 기준 Hold-out 검증은 Train 2019~2023, Test 2024로 자동 구성됩니다.
+
+최종 모델은 단일 Hold-out 결과가 아니라 Walk-Forward Validation 평균 성능을 기준으로 선택합니다. 평균 Validation R2가 가장 높은 모델을 우선하고, R2가 같거나 매우 유사하면 평균 RMSE, 평균 MAE가 낮은 모델을 선택합니다. 단일 Hold-out 결과는 참고용으로 함께 출력합니다.
+
+`best_model.pkl`은 최종 선택된 모델을 전체 학습 가능 데이터로 다시 학습한 뒤 저장합니다. 현재 데이터 기준으로는 2019~2024 전체를 사용해 최종 재학습합니다.
 
 전년도 발생건수 및 전년도 범죄율 feature 제거 실험은 엄밀한 의미의 모델 ablation이라기보다 특정 feature군 제거 실험 또는 feature importance 검증으로 표현하는 것이 더 정확합니다.
 
@@ -124,7 +130,7 @@ pylint src tests
 
 ## 모델 평가 기준
 
-최종 모델은 `linear`, `random_forest`, `xgboost` 세 AI 모델만 비교하여 선택합니다. Test R2를 가장 우선하고, 동률 또는 근소 차이에서는 RMSE와 MAE가 낮은 모델을 선택합니다.
+최종 모델은 `linear`, `random_forest`, `xgboost` 세 AI 모델만 비교하여 선택합니다. 선택 기준은 Walk-Forward 평균 Validation R2, 평균 RMSE, 평균 MAE 순서입니다.
 
 | Model | Test R2 | RMSE | MAE | Unique Ratio |
 |---|---:|---:|---:|---:|
@@ -132,7 +138,7 @@ pylint src tests
 | XGBoost | 0.9297 | 2160.26 | 669.84 | 0.1641 |
 | Random Forest | 0.9419 | 1963.84 | 679.53 | 0.6966 |
 
-학습 리포트에는 R2, RMSE, MAE, SMAPE, 예측 다양성, 지역별 MAE, 범죄 유형별 MAE를 포함합니다.
+학습 리포트에는 R2, RMSE, MAE, MSE, 예측 다양성, 지역별 MAE, 범죄 유형별 MAE를 포함합니다.
 
 ## 입력 파일 형식
 

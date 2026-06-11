@@ -30,11 +30,12 @@ def test_train_and_evaluate():
     assert output["best_name"] in output["models"]
     assert output["best_ai_name"] in output["models"]
     assert output["final_saved_model"] in output["models"]
-    assert output["best_model"] is output["models"][output["final_saved_model"]]
+    assert output["best_model"] is output["final_model"]
+    assert output["final_train_years"] == output["feature_available_years"]
     assert output["selection_reason"]
 
     for item in output["results"].values():
-        assert set(item["metrics"]) == {"mse", "rmse", "mae", "smape", "r2"}
+        assert set(item["metrics"]) == {"mse", "rmse", "mae", "r2"}
         assert set(item["prediction_diversity"]) == {
             "row_count",
             "unique_count",

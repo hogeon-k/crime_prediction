@@ -146,7 +146,6 @@ def test_model_performance_summary_loads_model_info(tmp_path):
                     "rmse": 1799.14,
                     "mae": 748.26,
                     "mse": 3236904.5,
-                    "smape": 12.4,
                 },
             },
             ensure_ascii=False,

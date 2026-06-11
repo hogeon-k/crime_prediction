@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import pickle
+import re
 import sys
 from pathlib import Path
 
@@ -31,8 +32,14 @@ from ai.preprocessing import (
     DEFAULT_TARGET_COLUMN,
     DEFAULT_TRAINING_CONFIG,
     ENGINEERED_FEATURE_COLUMNS,
+    TrainingConfig,
     add_feature_engineering,
     build_feature_engineering_stats,
+    excluded_previous_feature_years,
+    feature_available_years,
+    resolve_train_test_years,
+    sorted_years,
+    split_features_target,
     split_train_test,
 )
 from ai.random_forest.random_forest import RandomForestRegressorModel
@@ -145,7 +152,34 @@ def _ablation_drop(full_metrics, ablation_metrics):
 def select_best_model(
     results,
     ablation_results,
+    year_validation=None,
 ):
+    averages = (year_validation or {}).get("averages", {})
+    if averages:
+        best_name = max(
+            averages,
+            key=lambda name: (
+                float(averages[name]["mean_r2"]),
+                -float(averages[name]["mean_rmse"]),
+                -float(averages[name]["mean_mae"]),
+            ),
+        )
+        best_result = results[best_name]
+        return {
+            "best_name": best_name,
+            "best_ai_name": best_name,
+            "final_saved_model": best_name,
+            "best_result": best_result,
+            "best_model": best_result["model"],
+            "comparison": {"ai_candidates": results},
+            "warning": [],
+            "reason": [
+                "Selected by highest mean Walk-Forward validation R2, then lower mean RMSE and MAE.",
+                "Hold-out metrics are reported as reference only.",
+                f"{best_name} had the best Walk-Forward average validation score.",
+            ],
+        }
+
     def sort_key(name):
         metrics = results[name]["test_metrics"]
         diversity = results[name].get("prediction_diversity", {})
@@ -237,19 +271,62 @@ def _sorted_years(values):
     return sorted(int(year) for year in values)
 
 
+def _runtime_config(df, config=DEFAULT_TRAINING_CONFIG):
+    train_years, test_year = resolve_train_test_years(df, config=config)
+    return TrainingConfig(
+        train_years=train_years,
+        test_year=test_year,
+        exclude_first_year_for_previous_features=config.exclude_first_year_for_previous_features,
+        valid_years=config.valid_years,
+    )
+
+
+def _split_final_features_target(df):
+    feature_columns = DEFAULT_FEATURE_COLUMNS + [
+        column for column in ENGINEERED_FEATURE_COLUMNS if column in df.columns
+    ]
+    return split_features_target(df, feature_columns=feature_columns)
+
+
+def _retrain_final_model(df, model_name, train_years):
+    train_df = df[df["연도"].isin(train_years)]
+    stats = build_feature_engineering_stats(train_df)
+    engineered_df = add_feature_engineering(df, stats=stats)
+    final_df = engineered_df[engineered_df["연도"].isin(train_years)]
+    X_final, y_final = _split_final_features_target(final_df)
+    model = create_models()[model_name]
+    model.fit(X_final, y_final)
+    model.feature_columns = list(X_final.columns)
+    model.feature_engineering_stats = stats
+    return model, X_final, y_final, stats
+
+
 def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
+    raw_years = sorted_years(df)
+    available_years = feature_available_years(df, config=config)
+    excluded_years = excluded_previous_feature_years(df, config=config)
+    runtime_config = _runtime_config(df, config=config)
+
     print("\n========== 전체 데이터 연도 분포 ==========")
     print(df["연도"].value_counts().sort_index())
+    print(f"원본 데이터 연도: {raw_years[0]}~{raw_years[-1]}")
+    print(
+        "전년도 feature 생성 후 사용 가능 연도: "
+        f"{available_years[0]}~{available_years[-1]}"
+    )
+    print(f"전년도 feature 때문에 제외된 연도 목록: {excluded_years}")
+    if excluded_years:
+        print(f"{excluded_years[0]}년은 전년도 데이터 부재로 학습/검증 행에서 제외됩니다.")
 
     data_analysis = summarize_training_data(df)
-    train_source_df = df[df["연도"].isin(config.train_years)]
+    train_source_df = df[df["연도"].isin(runtime_config.train_years)]
     feature_engineering_stats = build_feature_engineering_stats(train_source_df)
     engineered_df = add_feature_engineering(df, stats=feature_engineering_stats)
 
     X_train, X_test, y_train, y_test = split_train_test(
         engineered_df,
-        train_years=config.train_years,
-        test_year=config.test_year,
+        train_years=runtime_config.train_years,
+        test_year=runtime_config.test_year,
     )
 
     train_years = _sorted_years(X_train["연도"].unique())
@@ -257,15 +334,19 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
 
     print("\n========== Train/Test 연도 확인 ==========")
     print(f"Train 연도: {train_years}")
-    print(f"Test 연도 : {test_years}")
+    print(f"Test 연도 : {test_years[0] if test_years else None}")
+    print(f"Train 행 수: {len(y_train)}")
+    print(f"Test 행 수: {len(y_test)}")
+    print(f"최종 사용 feature 목록: {list(X_train.columns)}")
 
-    if set(train_years) != set(config.train_years):
+    unexpected_train_years = set(train_years) - set(runtime_config.train_years)
+    if unexpected_train_years:
         raise ValueError(
-            f"Train 연도가 설정과 다릅니다. expected={list(config.train_years)}, actual={train_years}"
+            f"Train 연도가 설정 범위를 벗어났습니다. expected={list(runtime_config.train_years)}, actual={train_years}"
         )
-    if set(test_years) != {config.test_year}:
+    if set(test_years) != {runtime_config.test_year}:
         raise ValueError(
-            f"Test 연도가 설정과 다릅니다. expected={[config.test_year]}, actual={test_years}"
+            f"Test 연도가 설정과 다릅니다. expected={[runtime_config.test_year]}, actual={test_years}"
         )
 
     models = train_models(
@@ -273,7 +354,7 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
         y_train,
         feature_engineering_stats=feature_engineering_stats,
     )
-    test_group_data = engineered_df[engineered_df["연도"] == config.test_year]
+    test_group_data = engineered_df[engineered_df["연도"] == runtime_config.test_year]
     results = evaluate_models_train_test(
         models,
         X_train,
@@ -284,10 +365,9 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
     )
     ablation_results = run_ablation_without_previous_features(
         engineered_df,
-        config=config,
+        config=runtime_config,
         feature_engineering_stats=feature_engineering_stats,
     )
-    selection = select_best_model(results, ablation_results)
     hyperparameter_experiments = run_hyperparameter_experiments(
         X_train,
         y_train,
@@ -295,8 +375,18 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
         y_test,
     )
     year_validation = run_year_walk_forward_validation(df, config=config)
+    selection = select_best_model(results, ablation_results, year_validation=year_validation)
+    holdout_selected_model = results[selection["best_name"]]["model"]
+    final_train_years = tuple(available_years)
+    final_model, X_final, y_final, _ = _retrain_final_model(
+        df,
+        selection["best_name"],
+        final_train_years,
+    )
+    selection["best_model"] = final_model
+    selection["final_train_years"] = list(final_train_years)
     feature_importance = run_feature_importance_analysis(
-        selection["best_model"],
+        holdout_selected_model,
         X_test,
         y_test,
     )
@@ -314,10 +404,16 @@ def train_and_evaluate(df, config=DEFAULT_TRAINING_CONFIG):
         "best_model": selection["best_model"],
         "best_ai_name": selection["best_ai_name"],
         "final_saved_model": selection["final_saved_model"],
+        "final_model": final_model,
+        "final_train_years": list(final_train_years),
+        "final_training_row_count": int(len(y_final)),
         "selection_reason": selection["reason"],
         "selection_warning": selection["warning"],
         "train_years": train_years,
         "test_years": test_years,
+        "raw_years": raw_years,
+        "feature_available_years": available_years,
+        "excluded_years": excluded_years,
         "feature_columns": list(X_train.columns),
         "feature_engineering": {
             "enabled": True,
@@ -363,6 +459,8 @@ def print_selection_report(selection):
     print("\nReason:")
     for reason in selection.get("reason", []):
         print(f"- {reason}")
+    if selection.get("final_train_years"):
+        print(f"Final retrain years: {selection['final_train_years']}")
 
 def print_feature_removal_report(results):
     print("\n========== Feature removal: without previous-year features ==========")
@@ -514,13 +612,30 @@ def print_year_validation_report(year_validation):
             "model",
             "train_years",
             "validation_year",
+            "train_row_count",
+            "validation_row_count",
             "train_r2",
             "validation_r2",
             "r2_gap",
+            "validation_mse",
             "validation_rmse",
             "validation_mae",
         ],
     )
+    averages = year_validation.get("averages", {})
+    if averages:
+        print("\n[Walk-Forward 평균 성능]")
+        rows = [
+            {
+                "model": model,
+                **metrics,
+            }
+            for model, metrics in sorted(averages.items())
+        ]
+        _print_dataframe_table(
+            rows,
+            columns=["model", "fold_count", "mean_r2", "mean_mse", "mean_rmse", "mean_mae"],
+        )
 
 
 def print_feature_importance_report(feature_importance):
@@ -542,8 +657,8 @@ def print_feature_importance_report(feature_importance):
 def print_report_sentences():
     print("\n========== 보고서 작성 문장 ==========")
     sentences = [
-        "본 프로젝트는 연도 순서가 있는 2022~2024년 데이터를 사용하므로 무작위 K-Fold보다 과거 연도로 학습하고 다음 연도를 검증하는 연도 기반 Hold-out 및 Walk-Forward 검증이 더 적절하다.",
-        "다만 관측 연도가 3개뿐이므로 Fold 1은 2022년 학습 후 2023년 검증, Fold 2는 2022~2023년 학습 후 2024년 검증으로 제한되며, 교차검증 결과는 최종 성능의 확정치가 아니라 일반화 가능성을 점검하는 보조 근거로 해석했다.",
+        "본 프로젝트는 연도 순서가 있는 데이터를 사용하므로 무작위 K-Fold보다 과거 연도로 학습하고 다음 연도를 검증하는 연도 기반 Hold-out 및 Walk-Forward 검증이 더 적절하다.",
+        "Walk-Forward 검증은 사용 가능한 과거 연도를 누적해 다음 연도를 검증하며, 교차검증 결과는 최종 성능의 확정치가 아니라 일반화 가능성을 점검하는 보조 근거로 해석했다.",
         "RandomForest와 XGBoost는 각각 n_estimators, tree depth, split 조건, 정규화 관련 후보군을 두고 동일한 Train/Test 분리에서 R2, RMSE, MAE를 비교했다.",
         "최종 하이퍼파라미터 선택은 Test R2를 우선하고, 성능이 유사한 경우 Test RMSE와 Test MAE가 낮으며 Train/Test R2 차이가 작은 조합을 우선하는 기준으로 수행했다.",
         "전년도 발생건수 및 전년도 범죄율 feature를 제거한 실험은 엄밀한 의미의 모델 구성요소 ablation이라기보다 특정 feature군 제거 실험 또는 feature importance 검증으로 표현하는 것이 정확하다.",
@@ -589,7 +704,7 @@ def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PAT
     info_path = Path(info_path)
 
     best_name = output["final_saved_model"]
-    best_model = output["models"][best_name]
+    best_model = output.get("final_model", output["models"][best_name])
 
     print(f"\n========== 최종 저장 모델 ==========")
     print(f"Final Saved Model: {best_name}")
@@ -615,6 +730,12 @@ def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PAT
         "feature_engineering": output["feature_engineering"],
         "train_years": output["train_years"],
         "test_years": output["test_years"],
+        "final_train_years": output.get("final_train_years", output["train_years"]),
+        "final_training_row_count": output.get("final_training_row_count"),
+        "raw_years": output.get("raw_years", []),
+        "feature_available_years": output.get("feature_available_years", []),
+        "excluded_years": output.get("excluded_years", []),
+        "walk_forward_averages": output.get("year_validation", {}).get("averages", {}),
         "target_column": DEFAULT_TARGET_COLUMN,
         "selection_reason": output.get("selection_reason", []),
         "selection_warning": output.get("selection_warning", []),
@@ -633,9 +754,39 @@ def save_best_model(output, model_path=BEST_MODEL_PATH, info_path=MODEL_INFO_PAT
 def get_default_government_files():
     data_dir = SRC_DIR / "data"
     crime_files = sorted(data_dir.glob("crime_region_20*.csv"))
-    pop_files = sorted(data_dir.glob("pop_20*.csv"))
+    wide_pop_files = sorted(data_dir.glob("*pop*.csv"))
+    wide_pop_files = [
+        path
+        for path in wide_pop_files
+        if not path.name.startswith("pop_20") and re.search(r"20\d{2}.*20\d{2}", path.stem)
+    ]
+    pop_files = wide_pop_files or sorted(data_dir.glob("pop_20*.csv"))
 
     return [str(path) for path in crime_files], [str(path) for path in pop_files]
+
+
+def print_preprocessing_report(df):
+    report = df.attrs.get("preprocessing_report", {})
+    if not report:
+        return
+
+    print("\n========== 전처리 병합 리포트 ==========")
+    print("[범죄 데이터 연도별 행 수]")
+    for year, count in report.get("crime_year_counts", {}).items():
+        print(f"{year}: {count}")
+
+    print("\n[인구 데이터 연도별 지역 수]")
+    for year, count in report.get("population_year_counts", {}).items():
+        print(f"{year}: {count}")
+
+    print("\n[병합 실패 지역-연도 키]")
+    print(f"개수: {report.get('merge_failed_key_count', 0)}")
+    for row in report.get("merge_failed_keys", []):
+        print(f"- {row}")
+
+    print("\n[원본 변환 후 결측치 수]")
+    print(f"범죄: {report.get('crime_missing_values', {})}")
+    print(f"인구: {report.get('population_missing_values', {})}")
 
 
 def make_training_dataframe(crime_files=None, pop_files=None):
@@ -650,7 +801,9 @@ def make_training_dataframe(crime_files=None, pop_files=None):
         pop_files=list(pop_files),
     )
 
-    return run_excel_pipeline(params)
+    df = run_excel_pipeline(params)
+    print_preprocessing_report(df)
+    return df
 
 
 def main():
@@ -665,7 +818,7 @@ def main():
     parser.add_argument(
         "--pop-files",
         nargs="+",
-        help="인구 CSV 파일 목록. 생략하면 src/data/pop_20*.csv를 사용합니다.",
+        help="인구 CSV 파일 목록. 생략하면 src/data/*pop*.csv 통합 파일을 우선 사용하고, 없으면 pop_20*.csv를 사용합니다.",
     )
     args = parser.parse_args()
 

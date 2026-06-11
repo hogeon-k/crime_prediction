@@ -74,5 +74,5 @@ class ValidationRule:
     )
 
     valid_years: tuple[int, ...] = field(
-        default_factory=lambda: tuple(range(2020, 2027))
+        default_factory=lambda: tuple(range(2018, 2027))
     )

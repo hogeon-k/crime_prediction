@@ -1,15 +1,10 @@
-from pathlib import Path
-
 import _path_setup  # pylint: disable=unused-import
+from ai.train import get_default_government_files
 from services.crime_service import CrimeService
 
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "src" / "data"
-
-
 def test_government_data_pipeline() -> None:
-    crime_files = sorted(DATA_DIR.glob("crime_region_20*.csv"))
-    pop_files = sorted(DATA_DIR.glob("pop_20*.csv"))
+    crime_files, pop_files = get_default_government_files()
 
     if not crime_files or not pop_files:
         print("SKIP: no government csv files in src/data")
