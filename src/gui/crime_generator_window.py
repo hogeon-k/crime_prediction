@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Legacy standalone sample-data GUI.
+
+run_app.py is the final application entry point. This module is retained for
+manual fallback execution until the legacy entry points are removed.
+"""
+
 import os
 import threading
 import tkinter as tk

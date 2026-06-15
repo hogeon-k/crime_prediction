@@ -57,6 +57,15 @@ class SinglePredictionRangeModel:
         return X["전년도_발생_건수"]
 
 
+class PreviousFeatureModel(SinglePredictionRangeModel):
+    last_X = None
+
+    @classmethod
+    def predict(cls, X):
+        cls.last_X = X.copy()
+        return X["전년도_발생_건수"] + X["전년도_범죄율"]
+
+
 @pytest.mark.integration
 def test_best_model_file_exists():
     assert DEFAULT_MODEL_PATH.exists(), (
@@ -91,6 +100,24 @@ def test_predict_one():
     )
 
     assert isinstance(result, float)
+
+
+def test_predict_one_uses_supplied_previous_features():
+    model = PreviousFeatureModel()
+
+    result = predict_one(
+        year=2025,
+        region="서울",
+        crime_type="절도",
+        population=9000000,
+        previous_incidents=123.0,
+        previous_rate=4.5,
+        model=model,
+    )
+
+    assert result == 127.5
+    assert PreviousFeatureModel.last_X["전년도_발생_건수"].iloc[0] == 123.0
+    assert PreviousFeatureModel.last_X["전년도_범죄율"].iloc[0] == 4.5
 
 
 def test_predict_one_rejects_unrealistic_region_population():

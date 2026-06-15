@@ -2,6 +2,7 @@ import pandas as pd
 
 import _path_setup  # pylint: disable=unused-import
 from constants import PREDICTED_INCIDENTS_COLUMN, PREDICTED_RATE_COLUMN
+from services.analysis_data_service import ACTUAL_KIND, DATA_KIND_COLUMN, PREDICTED_KIND
 from services.statistics_service import StatisticsService
 
 
@@ -69,15 +70,6 @@ def test_filter_records_by_region_year_and_sort() -> None:
     assert filtered.iloc[0][PREDICTED_INCIDENTS_COLUMN] == 100.0
 
 
-def test_region_rate_map_data() -> None:
-    rows = StatisticsService.region_rate_map_data(make_prediction_result(), year=2025)
-
-    assert rows == [
-        {"region": "서울", "crime_rate": 2.2},
-        {"region": "부산", "crime_rate": 1.5},
-    ]
-
-
 def test_yearly_rate_trend() -> None:
     df = pd.concat(
         [
@@ -96,3 +88,58 @@ def test_yearly_rate_trend() -> None:
         {"year": 2025, "crime_rate": 2.2},
         {"year": 2026, "crime_rate": 3.0},
     ]
+
+
+def test_yearly_rate_summary_filters_specific_region() -> None:
+    df = pd.concat(
+        [
+            make_prediction_result().assign(**{DATA_KIND_COLUMN: PREDICTED_KIND}),
+            pd.DataFrame(
+                {
+                    "연도": [2024],
+                    "지역": ["부산"],
+                    "범죄_유형": ["절도"],
+                    "인구수": [3_300_000],
+                    "발생_건수": [40],
+                    "범죄율": [1.2],
+                    DATA_KIND_COLUMN: [ACTUAL_KIND],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    summary = StatisticsService.yearly_rate_summary(df, region="부산")
+
+    assert summary[["연도", DATA_KIND_COLUMN, "범죄율"]].values.tolist() == [
+        [2024, ACTUAL_KIND, 1.2],
+        [2025, PREDICTED_KIND, 1.5],
+    ]
+
+
+def test_yearly_rate_summary_uses_all_regions_when_region_is_none() -> None:
+    summary = StatisticsService.yearly_rate_summary(make_prediction_result())
+
+    assert summary["연도"].tolist() == [2025]
+    assert summary.iloc[0]["범죄율"] == make_prediction_result()[PREDICTED_RATE_COLUMN].mean()
+
+
+def test_yearly_rate_summary_returns_empty_for_no_match() -> None:
+    summary = StatisticsService.yearly_rate_summary(make_prediction_result(), region="제주")
+
+    assert summary.empty
+
+
+def test_yearly_rate_summary_sorts_dynamic_years() -> None:
+    df = pd.concat(
+        [
+            make_prediction_result().assign(연도=2027),
+            make_prediction_result().assign(연도=2025),
+            make_prediction_result().assign(연도=2026),
+        ],
+        ignore_index=True,
+    )
+
+    summary = StatisticsService.yearly_rate_summary(df)
+
+    assert summary["연도"].tolist() == [2025, 2026, 2027]

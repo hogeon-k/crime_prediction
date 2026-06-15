@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Legacy standalone Excel GUI.
+
+run_app.py is the final application entry point. This module is retained for
+older tests and manual fallback execution.
+"""
+
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -44,8 +50,13 @@ COL_POP = "\uc778\uad6c\uc218"
 COL_RATE = "\ubc94\uc8c4\uc728"
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SRC_DATA_DIR = ROOT_DIR / "src" / "data"
+# Deprecated fallback path kept for compatibility with older manual runs.
 PREDICTION_OUTPUT_PATH = ROOT_DIR / "data" / "prediction_result.xlsx"
 SAMPLE_PREDICTION_INPUT_PATH = ROOT_DIR / "data" / "sample_prediction_input.xlsx"
+
+
+def prediction_output_path(target_year: int) -> Path:
+    return ROOT_DIR / "data" / f"prediction_result_{int(target_year)}.xlsx"
 
 
 class ExcelWindow:
@@ -235,7 +246,7 @@ class ExcelWindow:
         self._action_buttons.extend([self._predict_btn, self._sample_btn])
         _label(
             inner,
-            f"\uacb0\uacfc: {PREDICTION_OUTPUT_PATH}",
+            "결과: data/prediction_result_{연도}.xlsx",
             fg=TEXT_SEC,
             wraplength=310,
             justify="left",
@@ -603,9 +614,10 @@ class ExcelWindow:
             )
 
     def _run_prediction(self, input_path: str, target_year: int) -> None:
+        output_path = prediction_output_path(target_year)
         df = self._viewmodel.predict_file(
             input_path,
-            str(PREDICTION_OUTPUT_PATH),
+            str(output_path),
             target_year=target_year,
         )
         if df is not None:
@@ -628,7 +640,7 @@ class ExcelWindow:
             self._populate_table(self._df)
         messagebox.showinfo(
             "저장된 모델 예측 완료",
-            f"\uacb0\uacfc \ud30c\uc77c\uc744 \uc800\uc7a5\ud588\uc2b5\ub2c8\ub2e4:\n{PREDICTION_OUTPUT_PATH}",
+            f"결과 파일을 저장했습니다:\n{prediction_output_path(int(self._target_year_var.get()))}",
         )
 
     def _set_status(self, msg: str, color: str = TEXT_PRI) -> None:

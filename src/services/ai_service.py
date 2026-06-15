@@ -11,6 +11,7 @@ from ai.predict import (
     DEFAULT_MODEL_PATH,
     load_best_model,
     predict_from_file,
+    predict_recursive_from_file,
     predict_one,
 )
 
@@ -41,6 +42,8 @@ class AIService:
         region: str,
         crime_type: str,
         population: int,
+        previous_incidents: float | None = None,
+        previous_rate: float | None = None,
     ) -> float:
         model = self.load_model()
         started_at = time.perf_counter()
@@ -50,6 +53,8 @@ class AIService:
             region=region,
             crime_type=crime_type,
             population=population,
+            previous_incidents=previous_incidents,
+            previous_rate=previous_rate,
             model=model,
         )
         self._record_resource_usage(started_at, cpu_started_at)
@@ -78,6 +83,26 @@ class AIService:
         self._record_resource_usage(started_at, cpu_started_at)
         return result
 
+    def predict_recursive_file(
+        self,
+        input_path: str | Path,
+        output_dir: str | Path,
+        start_year: int,
+        end_year: int,
+    ) -> dict[int, pd.DataFrame]:
+        model = self.load_model()
+        started_at = time.perf_counter()
+        cpu_started_at = time.process_time()
+        result = predict_recursive_from_file(
+            input_path,
+            output_dir,
+            start_year=start_year,
+            end_year=end_year,
+            model=model,
+        )
+        self._record_resource_usage(started_at, cpu_started_at)
+        return result
+
     def _record_resource_usage(self, started_at: float, cpu_started_at: float) -> None:
         wall_seconds = max(time.perf_counter() - started_at, 0.0)
         cpu_seconds = max(time.process_time() - cpu_started_at, 0.0)
@@ -91,11 +116,17 @@ class AIService:
     def get_model_performance_rows(self) -> list[dict[str, float | str | None]]:
         default_rows = [
             {
-                "model": "Linear Regression",
+                "model": "최종 저장 모델",
                 "mse": None,
                 "rmse": None,
                 "mae": None,
                 "r2": None,
+                "train_r2": None,
+                "selection_reason": "",
+                "walk_forward_mean_r2": None,
+                "walk_forward_mean_rmse": None,
+                "walk_forward_mean_mae": None,
+                "walk_forward_mean_mse": None,
                 "inference_seconds": None,
                 "cpu_usage_percent": None,
             },
@@ -111,16 +142,23 @@ class AIService:
 
         best_model = str(model_info.get("best_model", ""))
         metrics = model_info.get("metrics", {})
-        if best_model != "linear":
-            return [default_rows[0]]
+        walk_forward = model_info.get("walk_forward_averages", {}).get(best_model, {})
+        selection_reason = " ".join(model_info.get("selection_reason", []))
 
         return [
             {
                 **default_rows[0],
+                "model": model_info.get("final_saved_model") or best_model or "linear",
                 "mse": metrics.get("mse"),
                 "rmse": metrics.get("rmse"),
                 "mae": metrics.get("mae"),
                 "r2": metrics.get("r2"),
+                "train_r2": metrics.get("train_r2"),
+                "selection_reason": selection_reason,
+                "walk_forward_mean_r2": walk_forward.get("mean_r2"),
+                "walk_forward_mean_rmse": walk_forward.get("mean_rmse"),
+                "walk_forward_mean_mae": walk_forward.get("mean_mae"),
+                "walk_forward_mean_mse": walk_forward.get("mean_mse"),
                 "inference_seconds": self.last_inference_seconds,
                 "cpu_usage_percent": self.last_cpu_usage_percent,
             }
@@ -132,9 +170,15 @@ class AIService:
                 "message": "모델 성능 정보 파일을 찾을 수 없습니다. 예측은 가능하지만 성능 정보는 표시하지 않습니다.",
                 "model": None,
                 "r2": None,
+                "train_r2": None,
                 "rmse": None,
                 "mae": None,
                 "mse": None,
+                "selection_reason": "",
+                "walk_forward_mean_r2": None,
+                "walk_forward_mean_rmse": None,
+                "walk_forward_mean_mae": None,
+                "walk_forward_mean_mse": None,
                 "inference_seconds": self.last_inference_seconds,
                 "cpu_usage_percent": self.last_cpu_usage_percent,
             }
@@ -147,21 +191,35 @@ class AIService:
                 "message": "모델 성능 정보 파일을 읽을 수 없습니다. 예측은 가능하지만 성능 정보는 표시하지 않습니다.",
                 "model": None,
                 "r2": None,
+                "train_r2": None,
                 "rmse": None,
                 "mae": None,
                 "mse": None,
+                "selection_reason": "",
+                "walk_forward_mean_r2": None,
+                "walk_forward_mean_rmse": None,
+                "walk_forward_mean_mae": None,
+                "walk_forward_mean_mse": None,
                 "inference_seconds": self.last_inference_seconds,
                 "cpu_usage_percent": self.last_cpu_usage_percent,
             }
 
         metrics = model_info.get("metrics", {})
+        best_model = str(model_info.get("final_saved_model") or model_info.get("best_model") or "")
+        walk_forward = model_info.get("walk_forward_averages", {}).get(best_model, {})
         return {
             "message": "",
-            "model": model_info.get("best_model"),
+            "model": best_model or model_info.get("best_model"),
             "r2": metrics.get("r2"),
+            "train_r2": metrics.get("train_r2"),
             "rmse": metrics.get("rmse"),
             "mae": metrics.get("mae"),
             "mse": metrics.get("mse"),
+            "selection_reason": " ".join(model_info.get("selection_reason", [])),
+            "walk_forward_mean_r2": walk_forward.get("mean_r2"),
+            "walk_forward_mean_rmse": walk_forward.get("mean_rmse"),
+            "walk_forward_mean_mae": walk_forward.get("mean_mae"),
+            "walk_forward_mean_mse": walk_forward.get("mean_mse"),
             "inference_seconds": self.last_inference_seconds,
             "cpu_usage_percent": self.last_cpu_usage_percent,
         }

@@ -34,9 +34,9 @@ from gui.widgets import (  # noqa: E402
     card as _card,
     label as _label,
 )
-from gui.excel_window import ExcelWindow  # noqa: E402
 from model.excel_model import UploadParams  # noqa: E402
 from services.analysis_data_service import ACTUAL_KIND, DATA_KIND_COLUMN, PREDICTED_KIND  # noqa: E402
+from services.ai_service import AIService  # noqa: E402
 from services.dummy_generator import (  # noqa: E402
     VALID_REGIONS,
     DataExporter,
@@ -63,7 +63,7 @@ COL_RATE = "범죄율"
 
 
 def friendly_prediction_error(message: str) -> str:
-    return ExcelWindow._format_prediction_error(message)
+    return AIService.format_prediction_error(message)
 
 
 class TextLogger:
@@ -146,7 +146,15 @@ class DataGenerationTab(BaseTab):
         inner = tk.Frame(card, bg=PANEL_BG, padx=14, pady=14)
         inner.pack(fill="both", expand=True)
 
-        _label(inner, "더미 데이터 생성", font=FONT_TITLE).pack(anchor="w", pady=(0, 10))
+        _label(inner, "샘플 데이터 생성", font=FONT_TITLE).pack(anchor="w", pady=(0, 10))
+        _label(
+            inner,
+            "이 기능은 테스트 및 입력 형식 확인을 위한 샘플 데이터를 생성합니다.\n"
+            "실제 모델 학습 데이터로 사용하는 기능이 아닙니다.",
+            fg=TEXT_SEC,
+            wraplength=280,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
         self.count_var = tk.IntVar(value=500)
         self.year_start_var = tk.IntVar(value=2022)
         self.year_end_var = tk.IntVar(value=2024)
@@ -209,7 +217,7 @@ class DataGenerationTab(BaseTab):
             "region": regions,
         }
         self.set_busy(True)
-        self.log("더미 데이터 생성 시작")
+        self.log("샘플 데이터 생성 시작")
         threading.Thread(target=self._run_generate, args=(raw,), daemon=True).start()
 
     def _run_generate(self, raw: dict) -> None:
@@ -217,10 +225,10 @@ class DataGenerationTab(BaseTab):
             df = run_generation_pipeline(raw)
             self._df = df
             self.root.after(0, self._show_dataframe, df)
-            self.log(f"더미 데이터 생성 완료: {len(df):,}행")
+            self.log(f"샘플 데이터 생성 완료: {len(df):,}행")
         except Exception as exc:
-            self.root.after(0, lambda: messagebox.showerror("더미 데이터 생성 실패", str(exc)))
-            self.log(f"더미 데이터 생성 실패: {exc}")
+            self.root.after(0, lambda: messagebox.showerror("샘플 데이터 생성 실패", str(exc)))
+            self.log(f"샘플 데이터 생성 실패: {exc}")
         finally:
             self.root.after(0, lambda: self.set_busy(False))
 
@@ -251,7 +259,7 @@ class DataGenerationTab(BaseTab):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         result = DataExporter.save_to_csv(self._df, path)
         if result:
-            self.log(f"더미 CSV 저장 완료: {path}")
+            self.log(f"샘플 CSV 저장 완료: {path}")
             messagebox.showinfo("저장 완료", path)
         else:
             messagebox.showerror("저장 실패", result.message)
@@ -422,6 +430,7 @@ class FilePredictionTab(BaseTab):
         super().__init__(parent, app)
         self.input_var = tk.StringVar()
         self.target_year_var = tk.IntVar(value=2025)
+        self.end_year_var = tk.IntVar(value=2027)
         self.stat_labels: dict[str, tk.Label] = {}
         self._chart_canvases = []
         self._last_output_path: Path | None = None
@@ -433,7 +442,7 @@ class FilePredictionTab(BaseTab):
         _label(top, "파일 예측", font=FONT_TITLE, bg=BG).pack(anchor="w")
         _label(
             top,
-            "예측 결과는 data/prediction_result_YYYY.xlsx 형식으로 연도별 저장됩니다. Excel 파일은 Excel 프로그램으로 여는 것을 권장합니다.",
+            "기준 연도 파일로 다년도 재귀 예측을 실행하고 data/prediction_result_YYYY.xlsx 형식으로 연도별 저장합니다.",
             fg=TEXT_SEC,
             bg=BG,
             wraplength=900,
@@ -443,9 +452,11 @@ class FilePredictionTab(BaseTab):
         row.pack(fill="x")
         ttk.Entry(row, textvariable=self.input_var, font=FONT_SMALL).pack(side="left", fill="x", expand=True)
         tk.Button(row, text="파일 선택", command=self._browse_input, relief="flat", bg=BORDER).pack(side="left", padx=6)
-        _label(row, "예측 대상 연도", fg=TEXT_SEC, bg=BG).pack(side="left", padx=(8, 4))
+        _label(row, "시작 연도", fg=TEXT_SEC, bg=BG).pack(side="left", padx=(8, 4))
         ttk.Entry(row, textvariable=self.target_year_var, font=FONT_SMALL, width=8).pack(side="left")
-        self.add_button(_btn(row, "예측 실행", self._on_predict, bg=ACCENT)).pack(side="left")
+        _label(row, "종료 연도", fg=TEXT_SEC, bg=BG).pack(side="left", padx=(8, 4))
+        ttk.Entry(row, textvariable=self.end_year_var, font=FONT_SMALL, width=8).pack(side="left")
+        self.add_button(_btn(row, "다년도 재귀 예측 실행", self._on_predict, bg=ACCENT)).pack(side="left", padx=(6, 0))
         self.add_button(_btn(row, "결과 열기", self._open_result, bg=SUCCESS)).pack(side="left", padx=(6, 0))
         self.status_var = tk.StringVar(value="파일을 선택하세요.")
         _label(top, "", fg=TEXT_SEC, bg=BG, textvariable=self.status_var).pack(
@@ -481,8 +492,13 @@ class FilePredictionTab(BaseTab):
                 COL_REGION,
                 COL_CRIME,
                 COL_POP,
+                "전년도_발생_건수",
+                "전년도_범죄율",
                 PREDICTED_INCIDENTS_COLUMN,
                 PREDICTED_RATE_COLUMN,
+                "예측_단계",
+                "예측_방식",
+                "인구수_추정_방법",
             ],
         )
 
@@ -512,30 +528,42 @@ class FilePredictionTab(BaseTab):
             messagebox.showwarning("입력 없음", "예측할 CSV/XLSX 파일을 선택하세요.")
             return
         try:
-            target_year = int(self.target_year_var.get())
+            start_year = int(self.target_year_var.get())
+            end_year = int(self.end_year_var.get())
+            if end_year < start_year:
+                raise ValueError("종료 연도는 시작 연도 이상이어야 합니다.")
         except Exception:
-            messagebox.showerror("입력 오류", "예측 대상 연도는 숫자여야 합니다.")
+            messagebox.showerror("입력 오류", "예측 시작/종료 연도를 확인하세요.")
             return
         self.set_busy(True)
         self.status_var.set("데이터 검증 중")
-        self.log(f"파일 예측 시작: {path}, 예측 대상 연도={target_year}")
-        threading.Thread(target=self._run_predict, args=(path, target_year), daemon=True).start()
+        self.log(f"다년도 재귀 예측 시작: {path}, 예측 연도={start_year}~{end_year}")
+        threading.Thread(target=self._run_predict, args=(path, start_year, end_year), daemon=True).start()
 
-    def _run_predict(self, path: str, target_year: int) -> None:
+    def _run_predict(self, path: str, start_year: int, end_year: int) -> None:
         self.root.after(0, lambda: self.status_var.set("모델 로드 중"))
-        output_path = self.viewmodel.prediction_result_path(target_year)
-        df = self.viewmodel.predict_file(path, str(output_path), target_year=target_year)
+        output_dir = self.viewmodel.prediction_result_path(start_year).parent
+        df = self.viewmodel.predict_recursive_file(
+            path,
+            output_dir,
+            start_year=start_year,
+            end_year=end_year,
+        )
         if df is not None:
+            output_path = self.viewmodel.prediction_result_path(end_year)
             self._last_output_path = output_path
             self.root.after(0, lambda: self.status_var.set("예측 결과 표시 중"))
             self.root.after(0, self._show_dataframe, df)
             self.root.after(0, self._show_statistics)
             self.root.after(0, self._show_charts)
-            self.log(f"파일 예측 완료: {output_path}")
-            self.root.after(0, lambda: self.status_var.set("예측 완료 / 결과 저장 완료"))
+            self.log(f"다년도 재귀 예측 완료: {output_dir}")
+            self.root.after(0, lambda: self.status_var.set("재귀 예측 완료 / 연도별 결과 저장 완료"))
             self.root.after(
                 0,
-                lambda: messagebox.showinfo("예측 완료", f"결과 저장 완료:\n{output_path}"),
+                lambda: messagebox.showinfo(
+                    "예측 완료",
+                    f"{start_year}~{end_year} 재귀 예측 결과를 연도별로 저장했습니다:\n{output_dir}",
+                ),
             )
         else:
             message = self.viewmodel.state.error_message
@@ -556,8 +584,13 @@ class FilePredictionTab(BaseTab):
                     row.get(COL_REGION, ""),
                     row.get(COL_CRIME, ""),
                     self.format_number(row.get(COL_POP, "")),
+                    self.format_number(row.get("전년도_발생_건수", ""), 2),
+                    self.format_number(row.get("전년도_범죄율", ""), 2),
                     self.format_number(row.get(PREDICTED_INCIDENTS_COLUMN, ""), 2),
                     self.format_number(row.get(PREDICTED_RATE_COLUMN, ""), 2),
+                    row.get("예측_단계", ""),
+                    row.get("예측_방식", ""),
+                    row.get("인구수_추정_방법", ""),
                 ],
             )
 
@@ -647,7 +680,7 @@ class FilePredictionTab(BaseTab):
         self._chart_canvases.append(canvas)
 
     def _open_result(self) -> None:
-        path = self._last_output_path or self.viewmodel.prediction_result_path(int(self.target_year_var.get()))
+        path = self._last_output_path or self.viewmodel.prediction_result_path(int(self.end_year_var.get()))
         if not path.exists():
             messagebox.showwarning("결과 없음", "먼저 파일 예측을 실행하세요.")
             return
@@ -658,26 +691,6 @@ class FilePredictionTab(BaseTab):
 
 
 class AnalysisTab(BaseTab):
-    REGION_POINTS = {
-        "서울": (330, 120),
-        "인천": (270, 135),
-        "경기": (330, 165),
-        "강원": (470, 125),
-        "충북": (390, 235),
-        "충남": (295, 265),
-        "세종": (345, 275),
-        "대전": (355, 310),
-        "경북": (500, 305),
-        "대구": (485, 365),
-        "전북": (330, 385),
-        "광주": (300, 475),
-        "전남": (320, 530),
-        "경남": (450, 455),
-        "부산": (530, 465),
-        "울산": (555, 415),
-        "제주": (295, 650),
-    }
-
     def __init__(self, parent: ttk.Notebook, app: "CrimePredictionApp") -> None:
         super().__init__(parent, app)
         self.region_var = tk.StringVar()
@@ -687,6 +700,7 @@ class AnalysisTab(BaseTab):
         self.load_mode_var = tk.StringVar(value="실제 + 예측 데이터 통합")
         self.sort_var = tk.StringVar(value=COL_RATE)
         self.status_var = tk.StringVar(value="분석 데이터를 불러오세요.")
+        self.stat_labels: dict[str, tk.Label] = {}
         self._chart_canvases = []
         self._build()
         self._load_default()
@@ -694,7 +708,7 @@ class AnalysisTab(BaseTab):
     def _build(self) -> None:
         top = tk.Frame(self, bg=BG)
         top.pack(fill="x", padx=12, pady=12)
-        _label(top, "지역 통계/지도 분석", font=FONT_TITLE, bg=BG).pack(anchor="w")
+        _label(top, "지역·연도 분석", font=FONT_TITLE, bg=BG).pack(anchor="w")
 
         controls = tk.Frame(top, bg=BG)
         controls.pack(fill="x", pady=(8, 0))
@@ -724,41 +738,46 @@ class AnalysisTab(BaseTab):
         self.add_button(_btn(controls, "검색/갱신", self._refresh, bg=SUCCESS)).pack(side="left", padx=(8, 0))
         _label(top, "", fg=TEXT_SEC, bg=BG, textvariable=self.status_var).pack(anchor="w", pady=(6, 0))
 
-        body = tk.PanedWindow(self, orient="horizontal", bg=BG, sashwidth=6)
+        body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        left = _card(body)
-        right = _card(body)
-        body.add(left, minsize=420)
-        body.add(right, minsize=500)
+        summary_card = _card(body)
+        summary_card.pack(fill="x", pady=(0, 8))
+        summary_inner = tk.Frame(summary_card, bg=PANEL_BG, padx=12, pady=10)
+        summary_inner.pack(fill="x")
+        for key, title in [
+            ("row_count", "필터 결과"),
+            ("avg_rate", "평균 범죄율"),
+            ("avg_incidents", "평균 발생 건수"),
+            ("region_count", "지역 수"),
+            ("crime_type_count", "범죄유형 수"),
+        ]:
+            item = tk.Frame(summary_inner, bg=PANEL_BG)
+            item.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            _label(item, title, fg=TEXT_SEC).pack(anchor="w")
+            value_label = _label(item, "-", font=FONT_BOLD, fg=TEXT_PRI)
+            value_label.pack(anchor="w")
+            self.stat_labels[key] = value_label
 
-        left_inner = tk.Frame(left, bg=PANEL_BG, padx=10, pady=10)
-        left_inner.pack(fill="both", expand=True)
-        _label(left_inner, "지역별 범죄율 지도", font=FONT_BOLD).pack(anchor="w")
-        _label(
-            left_inner,
-            "색이 붉을수록 범죄율이 높고, 선택 지역은 노란색으로 강조됩니다.",
-            fg=TEXT_SEC,
-        ).pack(anchor="w", pady=(2, 6))
-        self.map_canvas = tk.Canvas(left_inner, width=620, height=700, bg="#F3F6FA", highlightthickness=0)
-        self.map_canvas.pack(fill="both", expand=True, pady=(8, 0))
-
-        right_inner = tk.Frame(right, bg=PANEL_BG, padx=10, pady=10)
-        right_inner.pack(fill="both", expand=True)
-        _label(right_inner, "범죄 리스트", font=FONT_BOLD).pack(anchor="w")
-        sort_row = tk.Frame(right_inner, bg=PANEL_BG)
+        table_card = _card(body)
+        table_card.pack(fill="both", expand=True, pady=(0, 8))
+        table_inner = tk.Frame(table_card, bg=PANEL_BG, padx=10, pady=10)
+        table_inner.pack(fill="both", expand=True)
+        _label(table_inner, "범죄 리스트", font=FONT_BOLD).pack(anchor="w")
+        sort_row = tk.Frame(table_inner, bg=PANEL_BG)
         sort_row.pack(fill="x", pady=(4, 6))
         _label(sort_row, "정렬", fg=TEXT_SEC).pack(side="left")
-        ttk.Combobox(
+        self.sort_combo = ttk.Combobox(
             sort_row,
             textvariable=self.sort_var,
             values=[COL_INCIDENTS, COL_RATE, PREDICTED_INCIDENTS_COLUMN, PREDICTED_RATE_COLUMN],
             width=18,
             state="readonly",
-        ).pack(side="left", padx=(4, 8))
+        )
+        self.sort_combo.pack(side="left", padx=(4, 8))
         self.add_button(_btn(sort_row, "정렬 적용", self._refresh, bg=ACCENT)).pack(side="left")
 
-        table_frame = tk.Frame(right_inner, bg=PANEL_BG)
+        table_frame = tk.Frame(table_inner, bg=PANEL_BG)
         table_frame.pack(fill="both", expand=True)
         self.table = ttk.Treeview(table_frame, show="headings", height=10)
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
@@ -766,8 +785,10 @@ class AnalysisTab(BaseTab):
         self.table.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        self.trend_frame = tk.Frame(right_inner, bg=PANEL_BG)
-        self.trend_frame.pack(fill="both", expand=True, pady=(10, 0))
+        trend_card = _card(body)
+        trend_card.pack(fill="both", expand=True)
+        self.trend_frame = tk.Frame(trend_card, bg=PANEL_BG, padx=10, pady=10)
+        self.trend_frame.pack(fill="both", expand=True)
 
     def _load_default(self) -> None:
         self._load_selected_mode()
@@ -777,7 +798,12 @@ class AnalysisTab(BaseTab):
         if mode == "actual_only":
             df = self.viewmodel.load_actual_analysis_data()
         elif mode == "predicted_only":
-            df = self.viewmodel.load_prediction_results_by_year([2025, 2026, 2027])
+            years = self.viewmodel.get_available_prediction_years()
+            if years:
+                df = self.viewmodel.load_prediction_results_by_year(years)
+            else:
+                df = self.viewmodel.load_actual_analysis_data()
+                self.status_var.set("예측 결과 파일이 없어 실제 처리 데이터를 불러왔습니다.")
         elif mode == "manual_file":
             self._browse_data()
             return
@@ -815,10 +841,28 @@ class AnalysisTab(BaseTab):
         self.year_combo.config(values=years)
         self.region_var.set(regions[0] if regions else "")
         self.year_var.set(years[0] if years else "")
+        self._update_sort_options()
         messages = " ".join(self.viewmodel.analysis_messages)
         suffix = f" {messages} 현재 사용 가능한 연도만 표시합니다." if messages else ""
         self.status_var.set(f"분석 데이터 로드 완료: {label}.{suffix}")
         self._refresh()
+
+    def _update_sort_options(self) -> None:
+        columns = self.viewmodel.get_table_columns()
+        preferred = [
+            COL_YEAR,
+            COL_REGION,
+            COL_CRIME,
+            COL_INCIDENTS,
+            COL_POP,
+            COL_RATE,
+            PREDICTED_INCIDENTS_COLUMN,
+            PREDICTED_RATE_COLUMN,
+        ]
+        values = [column for column in preferred if column in columns]
+        self.sort_combo.config(values=values)
+        if self.sort_var.get() not in values:
+            self.sort_var.set(values[0] if values else "")
 
     def _refresh(self) -> None:
         region = self.region_var.get()
@@ -832,12 +876,13 @@ class AnalysisTab(BaseTab):
             crime_type_query=self.crime_query_var.get().strip(),
             sort_by=self.sort_var.get(),
         )
-        self._draw_map()
         self._populate_table(filtered)
+        self._update_summary(filtered)
         self._draw_trend()
         messages = " ".join(self.viewmodel.analysis_messages)
         suffix = f" {messages} 현재 사용 가능한 연도만 표시합니다." if messages else ""
-        self.status_var.set(f"갱신 완료: {len(filtered):,}행.{suffix}")
+        shown = min(len(filtered), 200)
+        self.status_var.set(f"갱신 완료: 총 {len(filtered):,}건 중 {shown:,}건 표시.{suffix}")
 
     def _populate_table(self, df: pd.DataFrame) -> None:
         columns = self.viewmodel.get_table_columns()
@@ -857,101 +902,34 @@ class AnalysisTab(BaseTab):
                 values.append(value)
             self.table.insert("", "end", values=values)
 
-    def _draw_map(self) -> None:
-        self.map_canvas.delete("all")
-        rows = self.viewmodel.get_region_rate_map_data()
-        if not rows:
-            self.map_canvas.create_text(20, 20, anchor="nw", text="표시할 지도 데이터가 없습니다.", fill=TEXT_SEC)
-            return
+    def _update_summary(self, df: pd.DataFrame) -> None:
+        value_column = PREDICTED_INCIDENTS_COLUMN if PREDICTED_INCIDENTS_COLUMN in df.columns else COL_INCIDENTS
+        rate_column = PREDICTED_RATE_COLUMN if PREDICTED_RATE_COLUMN in df.columns else COL_RATE
 
-        values = [float(row["crime_rate"]) for row in rows]
-        low, high = min(values), max(values)
-        by_region = {str(row["region"]): float(row["crime_rate"]) for row in rows}
-        selected = self.viewmodel.selected_region
-        self.map_canvas.create_rectangle(14, 14, 606, 686, fill="#FFFFFF", outline="#D8DEE8", width=1)
-        self.map_canvas.create_text(
-            30,
-            32,
-            anchor="nw",
-            text="지역별 평균 범죄율",
-            fill=TEXT_PRI,
-            font=("맑은 고딕", 11, "bold"),
+        def fmt(value, digits: int = 2) -> str:
+            if value is None or pd.isna(value):
+                return "-"
+            return f"{float(value):,.{digits}f}"
+
+        values = pd.to_numeric(df[value_column], errors="coerce") if value_column in df.columns else pd.Series(dtype=float)
+        rates = pd.to_numeric(df[rate_column], errors="coerce") if rate_column in df.columns else pd.Series(dtype=float)
+        self.stat_labels["row_count"].config(text=f"{len(df):,}건")
+        self.stat_labels["avg_rate"].config(text=fmt(rates.mean() if not rates.dropna().empty else None))
+        self.stat_labels["avg_incidents"].config(text=fmt(values.mean() if not values.dropna().empty else None))
+        self.stat_labels["region_count"].config(
+            text=str(df[COL_REGION].nunique()) if COL_REGION in df.columns else "0"
         )
-        self._draw_map_legend(low, high)
-        self.map_canvas.create_line(80, 86, 540, 86, fill="#E5E7EB")
-
-        for region, (x, y) in self.REGION_POINTS.items():
-            value = by_region.get(region)
-            if value is None:
-                color = "#E5E7EB"
-                rate_text = "-"
-            else:
-                color = self._rate_color(value, low, high)
-                rate_text = f"{value:.2f}"
-
-            is_selected = selected == region
-            if is_selected:
-                color = "#FACC15"
-            outline = "#111827" if is_selected else "#CBD5E1"
-            width = 3 if is_selected else 1
-            self.map_canvas.create_oval(
-                x - 25,
-                y - 25,
-                x + 25,
-                y + 25,
-                fill=color,
-                outline=outline,
-                width=width,
-            )
-            self.map_canvas.create_text(
-                x,
-                y - 6,
-                text=region,
-                font=("맑은 고딕", 8, "bold"),
-                fill="#111827",
-            )
-            self.map_canvas.create_text(
-                x,
-                y + 10,
-                text=rate_text,
-                font=("맑은 고딕", 8),
-                fill="#111827",
-            )
-
-    def _draw_map_legend(self, low: float, high: float) -> None:
-        x0, y0 = 365, 34
-        steps = 6
-        for index in range(steps):
-            ratio_value = low + (high - low) * (index / max(steps - 1, 1))
-            color = self._rate_color(ratio_value, low, high)
-            self.map_canvas.create_rectangle(
-                x0 + index * 22,
-                y0,
-                x0 + (index + 1) * 22,
-                y0 + 12,
-                fill=color,
-                outline=color,
-            )
-        self.map_canvas.create_text(x0, y0 + 20, anchor="nw", text=f"낮음 {low:.2f}", fill=TEXT_SEC, font=("맑은 고딕", 8))
-        self.map_canvas.create_text(x0 + 132, y0 + 20, anchor="ne", text=f"높음 {high:.2f}", fill=TEXT_SEC, font=("맑은 고딕", 8))
-        self.map_canvas.create_oval(x0 + 158, y0 - 2, x0 + 174, y0 + 14, fill="#FACC15", outline="#111827")
-        self.map_canvas.create_text(x0 + 180, y0 + 6, anchor="w", text="선택", fill=TEXT_SEC, font=("맑은 고딕", 8))
-
-    @staticmethod
-    def _rate_color(value: float, low: float, high: float) -> str:
-        if high <= low:
-            ratio = 0.5
-        else:
-            ratio = (value - low) / (high - low)
-        red = int(59 + ratio * 180)
-        blue = int(220 - ratio * 160)
-        green = int(130 - ratio * 80)
-        return f"#{red:02x}{green:02x}{blue:02x}"
+        self.stat_labels["crime_type_count"].config(
+            text=str(df[COL_CRIME].nunique()) if COL_CRIME in df.columns else "0"
+        )
 
     def _draw_trend(self) -> None:
         for widget in self.trend_frame.winfo_children():
             widget.destroy()
-        summary = self.viewmodel.get_yearly_crime_rate_summary()
+        summary = self.viewmodel.get_yearly_crime_rate_summary(
+            region_query=self.region_query_var.get().strip(),
+            crime_type_query=self.crime_query_var.get().strip(),
+        )
         if summary.empty:
             _label(self.trend_frame, "연도별 범죄율 그래프를 표시할 데이터가 없습니다.", fg=TEXT_SEC).pack(anchor="w")
             return
@@ -969,7 +947,7 @@ class AnalysisTab(BaseTab):
             if font_path.exists()
             else None
         )
-        fig = Figure(figsize=(5.8, 2.4), dpi=100)
+        fig = Figure(figsize=(8.2, 2.8), dpi=100)
         ax = fig.add_subplot(111)
         legend_names = {
             ACTUAL_KIND: "실제 데이터",
@@ -989,12 +967,16 @@ class AnalysisTab(BaseTab):
                 color=colors.get(str(data_kind), "#64748B"),
                 label=legend_names.get(str(data_kind), str(data_kind)),
             )
-        ax.set_xlim(2021.5, 2027.5)
-        ax.set_xticks(list(range(2022, 2028)))
+        years = sorted(pd.to_numeric(summary[COL_YEAR], errors="coerce").dropna().astype(int).unique().tolist())
+        if years:
+            ax.set_xticks(years)
+            ax.set_xlim(min(years) - 0.5, max(years) + 0.5)
         ax.set_xlabel("연도", fontproperties=font_properties)
         ax.set_ylabel("평균 범죄율", fontproperties=font_properties)
+        selected_region = self.viewmodel.selected_region
+        title = f"{selected_region} 연도별 범죄율" if selected_region else "전체 지역 연도별 평균 범죄율"
         ax.set_title(
-            "2022~2027 연도별 범죄율 비교",
+            title,
             fontproperties=font_properties,
         )
         ax.legend(prop=font_properties)
@@ -1017,10 +999,10 @@ class ModelPerformanceTab(BaseTab):
     def _build(self) -> None:
         top = tk.Frame(self, bg=BG)
         top.pack(fill="x", padx=12, pady=12)
-        _label(top, "모델 성능/리소스 및 로그", font=FONT_TITLE, bg=BG).pack(anchor="w")
+        _label(top, "최종 모델 성능 및 추론 정보", font=FONT_TITLE, bg=BG).pack(anchor="w")
         _label(
             top,
-            "현재 화면에서는 최종 저장 모델인 Linear Regression 성능과 실행 로그를 함께 확인합니다.",
+            "현재 화면은 model_info.json에 저장된 최종 모델 정보와 마지막 추론 리소스를 표시합니다.",
             fg=TEXT_SEC,
             bg=BG,
         ).pack(anchor="w", pady=(4, 8))
@@ -1030,13 +1012,25 @@ class ModelPerformanceTab(BaseTab):
         body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         inner = tk.Frame(body, bg=PANEL_BG, padx=14, pady=10)
         inner.pack(fill="both", expand=True)
-        columns = ["model", "mse", "rmse", "mae", "r2", "inference_seconds", "cpu_usage_percent"]
+        columns = [
+            "model",
+            "train_r2",
+            "r2",
+            "rmse",
+            "mae",
+            "mse",
+            "walk_forward_mean_r2",
+            "inference_seconds",
+            "cpu_usage_percent",
+        ]
         headings = {
-            "model": "모델",
+            "model": "최종 모델",
+            "train_r2": "Train R²",
+            "r2": "Test R²",
+            "walk_forward_mean_r2": "WF 평균 R²",
             "mse": "MSE",
             "rmse": "RMSE",
             "mae": "MAE",
-            "r2": "R²",
             "inference_seconds": "추론 시간(초)",
             "cpu_usage_percent": "CPU 사용량(%)",
         }
@@ -1058,14 +1052,26 @@ class ModelPerformanceTab(BaseTab):
                 "end",
                 values=[
                     row.get("model"),
-                    self._fmt(row.get("mse")),
+                    self._fmt(row.get("train_r2")),
+                    self._fmt(row.get("r2")),
                     self._fmt(row.get("rmse")),
                     self._fmt(row.get("mae")),
-                    self._fmt(row.get("r2")),
+                    self._fmt(row.get("mse")),
+                    self._fmt(row.get("walk_forward_mean_r2")),
                     self._fmt(row.get("inference_seconds")),
                     self._fmt(row.get("cpu_usage_percent")),
                 ],
             )
+        summary = self.viewmodel.get_model_performance_summary()
+        self.text.delete("1.0", "end")
+        lines = [
+            f"최종 모델: {summary.get('model') or '-'}",
+            f"선택 기준: {summary.get('selection_reason') or '-'}",
+            f"Walk-Forward 평균 RMSE: {self._fmt(summary.get('walk_forward_mean_rmse'))}",
+            f"Walk-Forward 평균 MAE: {self._fmt(summary.get('walk_forward_mean_mae'))}",
+            f"Walk-Forward 평균 MSE: {self._fmt(summary.get('walk_forward_mean_mse'))}",
+        ]
+        self.text.insert("end", "\n".join(lines))
 
     @staticmethod
     def _fmt(value) -> str:
@@ -1130,10 +1136,12 @@ class SinglePredictionTab(BaseTab):
                 raise ValueError("지역과 범죄_유형을 입력하세요.")
             if population <= 0:
                 raise ValueError("인구수는 1 이상이어야 합니다.")
-            if self.prev_incidents_var.get().strip():
-                float(self.prev_incidents_var.get())
-            if self.prev_rate_var.get().strip():
-                float(self.prev_rate_var.get())
+            if not self.prev_incidents_var.get().strip() or not self.prev_rate_var.get().strip():
+                raise ValueError("전년도 발생건수와 전년도 범죄율을 모두 입력하세요.")
+            previous_incidents = float(self.prev_incidents_var.get())
+            previous_rate = float(self.prev_rate_var.get())
+            if previous_incidents < 0 or previous_rate < 0:
+                raise ValueError("전년도 발생건수와 전년도 범죄율은 0 이상이어야 합니다.")
         except Exception as exc:
             messagebox.showerror("입력 오류", str(exc))
             return
@@ -1142,12 +1150,27 @@ class SinglePredictionTab(BaseTab):
         self.log("단일 예측 실행 중")
         threading.Thread(
             target=self._run_predict,
-            args=(year, region, crime_type, population),
+            args=(year, region, crime_type, population, previous_incidents, previous_rate),
             daemon=True,
         ).start()
 
-    def _run_predict(self, year: int, region: str, crime_type: str, population: int) -> None:
-        predicted_incidents = self.viewmodel.predict_one(year, region, crime_type, population)
+    def _run_predict(
+        self,
+        year: int,
+        region: str,
+        crime_type: str,
+        population: int,
+        previous_incidents: float,
+        previous_rate: float,
+    ) -> None:
+        predicted_incidents = self.viewmodel.predict_one(
+            year,
+            region,
+            crime_type,
+            population,
+            previous_incidents=previous_incidents,
+            previous_rate=previous_rate,
+        )
         if predicted_incidents is not None:
             predicted_rate = self.viewmodel.state.predicted_rate or 0.0
             message = (
@@ -1224,8 +1247,8 @@ class CrimePredictionApp:
         self._add_tab(UploadPreprocessTab, "Excel/CSV 업로드 및 전처리")
         self._add_tab(FilePredictionTab, "파일 예측")
         self._add_tab(SinglePredictionTab, "단일 예측")
-        self._add_tab(AnalysisTab, "지역 통계/지도 분석")
-        self.notebook.add(self.performance_log_tab, text="모델 성능/리소스 · 로그")
+        self._add_tab(AnalysisTab, "지역·연도 분석")
+        self.notebook.add(self.performance_log_tab, text="최종 모델 성능 · 로그")
         self.log("통합 GUI 준비 완료")
 
     def _add_tab(self, cls, title: str) -> None:

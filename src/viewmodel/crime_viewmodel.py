@@ -159,12 +159,45 @@ class CrimeViewModel:
         self._callback(self.state)
         return df
 
+    def predict_recursive_file(
+        self,
+        input_path: str,
+        output_dir: str | Path,
+        start_year: int,
+        end_year: int,
+    ) -> pd.DataFrame | None:
+        """저장된 모델로 다년도 재귀 파일 예측을 실행하고 결과를 state에 저장한다."""
+        self.state = CrimeState(status=ProcessStatus.RUNNING, current_step="다년도 재귀 예측")
+        self._callback(self.state)
+
+        try:
+            results = self._ai_service.predict_recursive_file(
+                input_path,
+                output_dir,
+                start_year=start_year,
+                end_year=end_year,
+            )
+        except Exception as exc:
+            self._set_failed(
+                "다년도 재귀 예측",
+                self._ai_service.format_prediction_error(str(exc)),
+            )
+            return None
+
+        df = pd.concat(results.values(), ignore_index=True) if results else pd.DataFrame()
+        self.state.status = ProcessStatus.SUCCESS
+        self.state.final_data = df
+        self._callback(self.state)
+        return df
+
     def predict_one(
         self,
         year: int,
         region: str,
         crime_type: str,
         population: int,
+        previous_incidents: float | None = None,
+        previous_rate: float | None = None,
     ) -> float | None:
         """저장된 모델로 단건 예측을 실행한다."""
         self.state = CrimeState(status=ProcessStatus.RUNNING, current_step="단일 예측")
@@ -176,6 +209,8 @@ class CrimeViewModel:
                 region=region,
                 crime_type=crime_type,
                 population=population,
+                previous_incidents=previous_incidents,
+                previous_rate=previous_rate,
             )
         except Exception as exc:
             self._set_failed(
@@ -237,10 +272,19 @@ class CrimeViewModel:
     def get_available_prediction_years(self) -> list[int]:
         return self._analysis_data_service.get_available_prediction_years()
 
-    def get_yearly_crime_rate_summary(self) -> pd.DataFrame:
+    def get_yearly_crime_rate_summary(
+        self,
+        region_query: str = "",
+        crime_type_query: str = "",
+    ) -> pd.DataFrame:
         if self.state.final_data is None:
             return pd.DataFrame()
-        return self._analysis_data_service.get_yearly_crime_rate_summary(self.state.final_data)
+        return self._statistics_service.yearly_rate_summary(
+            self.state.final_data,
+            region=self.selected_region,
+            region_query=region_query,
+            crime_type_query=crime_type_query,
+        )
 
     def set_region_year_selection(
         self,
@@ -297,14 +341,6 @@ class CrimeViewModel:
             crime_type_query=crime_type_query,
             sort_by=sort_by,
             ascending=ascending,
-        )
-
-    def get_region_rate_map_data(self) -> list[dict[str, float | str]]:
-        if self.state.final_data is None:
-            return []
-        return self._statistics_service.region_rate_map_data(
-            self.state.final_data,
-            year=self.selected_year,
         )
 
     def get_yearly_rate_trend(self) -> list[dict[str, float | int]]:

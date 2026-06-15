@@ -9,7 +9,7 @@
 - 연도 기준 자동 Train/Test 분리: 현재 원본 2018~2024, 전년도 feature 적용 후 Train 2019~2023 / Test 2024
 - Linear Regression, 직접 구현 Random Forest, 직접 구현 XGBoost 비교
 - 전년도 발생 건수, 전년도 범죄율, 지역/범죄유형 평균 feature 생성
-- 예측 결과 CSV/XLSX 저장
+- 2024년 실제 데이터를 기준으로 2025~2027 다년도 재귀 예측 결과 XLSX 저장
 - Tkinter GUI 제공
 - pytest 기반 테스트와 ruff/pylint 품질 점검 설정
 
@@ -32,20 +32,22 @@ pip install -e ".[dev]"
 
 ## 실행 방법
 
-통합 GUI:
+최종 통합 GUI:
 
 ```powershell
 python run_app.py
 ```
 
-개별 GUI:
+Deprecated legacy GUI:
 
 ```powershell
 python src/run_gui.py
 python src/run_excel_gui.py
 ```
 
-파일 예측:
+위 개별 GUI는 이전 화면 확인용으로만 유지되며, 최종 실행 화면은 `run_app.py`입니다.
+
+파일 예측 API:
 
 ```python
 import sys
@@ -53,10 +55,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path("src").resolve()))
 
-from ai.predict import predict_from_file
+from ai.predict import predict_recursive_from_file
 
-predict_from_file("input.xlsx", "data/prediction_result.xlsx")
+predict_recursive_from_file("input.xlsx", "data", start_year=2025, end_year=2027)
 ```
+
+기존 `predict_from_file(..., target_year=...)` API는 단일 목표 연도 독립 예측용으로 유지됩니다. 최종 GUI의 파일 예측 화면은 다년도 재귀 예측을 사용합니다.
 
 단일 입력 예측:
 
@@ -132,11 +136,11 @@ pylint src tests
 
 최종 모델은 `linear`, `random_forest`, `xgboost` 세 AI 모델만 비교하여 선택합니다. 선택 기준은 Walk-Forward 평균 Validation R2, 평균 RMSE, 평균 MAE 순서입니다.
 
-| Model | Test R2 | RMSE | MAE | Unique Ratio |
-|---|---:|---:|---:|---:|
-| Linear | 0.9513 | 1799.14 | 748.26 | 0.9009 |
-| XGBoost | 0.9297 | 2160.26 | 669.84 | 0.1641 |
-| Random Forest | 0.9419 | 1963.84 | 679.53 | 0.6966 |
+| Model | Walk-Forward mean R2 | Walk-Forward mean RMSE | Walk-Forward mean MAE | Hold-out R2 | Hold-out RMSE | Hold-out MAE |
+|---|---:|---:|---:|---:|---:|---:|
+| Linear | 0.9690 | 1273.33 | 444.60 | 0.9601 | 1627.16 | 476.60 |
+| XGBoost | 0.9604 | 1431.79 | 379.96 | - | - | - |
+| Random Forest | 0.9544 | 1522.16 | 452.95 | - | - | - |
 
 학습 리포트에는 R2, RMSE, MAE, MSE, 예측 다양성, 지역별 MAE, 범죄 유형별 MAE를 포함합니다.
 
@@ -148,6 +152,26 @@ pylint src tests
 - `지역`
 - `범죄_유형`
 - `인구수`
+
+다년도 재귀 예측 결과 파일은 다음 컬럼을 포함합니다.
+
+- `입력_기준_연도`
+- `예측_대상_연도`
+- `지역`
+- `범죄_유형`
+- `연도`
+- `인구수`
+- `전년도_발생_건수`
+- `전년도_범죄율`
+- `예측_발생_건수`
+- `예측_범죄율`
+- `예측_단계`
+- `예측_방식`
+- `인구수_추정_방법`
+
+2025년은 2024년 실제 `발생_건수`와 `범죄율`을 전년도 feature로 사용합니다. 2026년은 2025년 예측값을, 2027년은 2026년 예측값을 각각 다음 연도의 전년도 feature로 연결합니다.
+
+미래 연도 인구수가 입력 데이터에 있으면 해당 값을 사용하고, 없으면 최근 기준 인구수를 유지합니다. 이 경우 결과 파일의 `인구수_추정_방법`에 `latest_known_population_carry_forward`가 기록됩니다.
 
 업로드 검증 정책:
 
@@ -161,7 +185,7 @@ pylint src tests
 ## Sample Input/Output
 
 - `data/sample_prediction_input.xlsx`: 예측 입력 예시
-- `data/prediction_result.xlsx`: 예측 결과 예시
+- `data/prediction_result_YYYY.xlsx`: 연도별 예측 결과 예시
 
 이 파일들은 실행 중 생성되는 산출물이므로 기본적으로 Git에 포함하지 않습니다. 공개 데모가 필요하면 작은 샘플만 별도 release asset으로 제공하세요.
 
@@ -204,3 +228,9 @@ Git에 포함하지 않는 항목:
 - 대용량 원천 데이터
 
 `models/model_info.json`은 모델 메타데이터 예시로 유지할 수 있지만, 실제 배포 모델과 일치하는 최신 값인지 확인해야 합니다.
+
+## 현재 한계
+
+- 2025~2027 실제값은 아직 없으므로 재귀 예측은 전년도 예측 오차가 다음 연도로 누적될 수 있습니다.
+- 미래 인구 데이터가 없으면 최근 인구수를 유지하는 정책을 사용하므로 장기 예측에는 인구 변동 오차가 포함될 수 있습니다.
+- Random Forest와 XGBoost는 프로젝트 내부 직접 구현 모델이며, 운영 수준 최적화 라이브러리와 동일한 성능/기능을 보장하지 않습니다.

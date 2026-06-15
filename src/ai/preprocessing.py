@@ -293,6 +293,11 @@ def add_feature_engineering(
     target_column: str = DEFAULT_TARGET_COLUMN,
 ) -> pd.DataFrame:
     engineered = df.copy()
+    supplied_engineered = {
+        column: pd.to_numeric(engineered[column], errors="coerce")
+        for column in ENGINEERED_FEATURE_COLUMNS
+        if column in engineered.columns
+    }
 
     if stats is None and target_column in engineered.columns:
         stats = build_feature_engineering_stats(engineered, target_column=target_column)
@@ -352,6 +357,9 @@ def add_feature_engineering(
 
     for column in ENGINEERED_FEATURE_COLUMNS:
         engineered[column] = pd.to_numeric(engineered[column], errors="coerce").fillna(0.0)
+        if column in supplied_engineered:
+            supplied = supplied_engineered[column]
+            engineered.loc[supplied.notna(), column] = supplied.loc[supplied.notna()]
 
     return engineered
 

@@ -129,7 +129,7 @@ def test_model_performance_rows_are_loaded_through_viewmodel(tmp_path):
 
     rows = viewmodel.get_model_performance_rows()
 
-    assert [row["model"] for row in rows] == ["Linear Regression"]
+    assert [row["model"] for row in rows] == ["service_prediction_model"]
     assert all("rmse" in row for row in rows)
     assert all("inference_seconds" in row for row in rows)
     assert all("cpu_usage_percent" in row for row in rows)

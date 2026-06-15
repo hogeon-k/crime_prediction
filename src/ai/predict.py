@@ -1,6 +1,7 @@
 import hashlib
 import json
 import pickle
+import shutil
 import sys
 from collections import Counter
 from pathlib import Path
@@ -19,6 +20,12 @@ if str(SRC_DIR) not in sys.path:
 
 from constants import (
     BASE_YEAR_COLUMN,
+    COL_CRIME_RATE,
+    COL_CRIME_TYPE,
+    COL_INCIDENTS,
+    COL_POPULATION,
+    COL_REGION,
+    COL_YEAR,
     PREDICTED_INCIDENTS_COLUMN,
     PREDICTED_RATE_COLUMN,
     TARGET_YEAR_COLUMN,
@@ -31,6 +38,15 @@ from ai.preprocessing import (
     normalize_prediction_features,
     unknown_prediction_categories,
 )
+
+PREVIOUS_INCIDENTS_COLUMN = "전년도_발생_건수"
+PREVIOUS_RATE_COLUMN = "전년도_범죄율"
+PREDICTION_STEP_COLUMN = "예측_단계"
+PREDICTION_METHOD_COLUMN = "예측_방식"
+POPULATION_METHOD_COLUMN = "인구수_추정_방법"
+RECURSIVE_PREDICTION_METHOD = "recursive"
+POPULATION_METHOD_UPLOADED = "uploaded_population"
+POPULATION_METHOD_CARRY_FORWARD = "latest_known_population_carry_forward"
 
 
 def _sha256_file(path: Path) -> str:
@@ -220,7 +236,7 @@ def _print_prediction_file_summary(predictions, debug_printer=print):
     series = pd.Series(predictions, dtype=float)
     value_counts = series.value_counts(dropna=False)
 
-    debug_printer("\n========== prediction_result.xlsx 예측 다양성 ==========")
+    debug_printer("\n========== 예측 결과 파일 예측 다양성 ==========")
     debug_printer(f"예측 행 수: {len(series)}")
     debug_printer(f"예측_발생_건수 고유값 수: {series.nunique(dropna=False)}")
     debug_printer("가장 많이 반복되는 예측값:")
@@ -400,6 +416,8 @@ def predict_one(
     region: str,
     crime_type: str,
     population: int,
+    previous_incidents: float | None = None,
+    previous_rate: float | None = None,
     model=None,
     model_path=DEFAULT_MODEL_PATH,
 ):
@@ -414,6 +432,10 @@ def predict_one(
             "인구수": [population],
         }
     )
+    if previous_incidents is not None:
+        X["전년도_발생_건수"] = [previous_incidents]
+    if previous_rate is not None:
+        X["전년도_범죄율"] = [previous_rate]
 
     _validate_single_prediction_population(model, X)
     prediction = predict(model, X)
@@ -480,15 +502,290 @@ def _order_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
     preferred_columns = [
         BASE_YEAR_COLUMN,
         TARGET_YEAR_COLUMN,
-        "지역",
-        "범죄_유형",
-        "인구수",
+        COL_REGION,
+        COL_CRIME_TYPE,
+        COL_YEAR,
+        COL_POPULATION,
+        PREVIOUS_INCIDENTS_COLUMN,
+        PREVIOUS_RATE_COLUMN,
         PREDICTED_INCIDENTS_COLUMN,
         PREDICTED_RATE_COLUMN,
+        PREDICTION_STEP_COLUMN,
+        PREDICTION_METHOD_COLUMN,
+        POPULATION_METHOD_COLUMN,
     ]
     ordered = [column for column in preferred_columns if column in df.columns]
     remaining = [column for column in df.columns if column not in ordered]
     return df[ordered + remaining]
+
+
+def _validate_positive_population(df: pd.DataFrame) -> None:
+    if COL_POPULATION not in df.columns:
+        raise ValueError("예측 입력에 인구수 컬럼이 없습니다.")
+    population = pd.to_numeric(df[COL_POPULATION], errors="coerce")
+    bad = df[population.isna() | (population <= 0)]
+    if not bad.empty:
+        keys = bad[[COL_REGION, COL_CRIME_TYPE]].astype(str).head(10).to_dict("records")
+        raise ValueError(f"인구수가 누락되었거나 0 이하인 예측 입력이 있습니다: {keys}")
+
+
+def _validate_previous_features(df: pd.DataFrame) -> None:
+    missing_columns = [
+        column
+        for column in (PREVIOUS_INCIDENTS_COLUMN, PREVIOUS_RATE_COLUMN)
+        if column not in df.columns
+    ]
+    if missing_columns:
+        raise ValueError(f"재귀 예측에 필요한 전년도 feature 컬럼이 없습니다: {missing_columns}")
+    bad_mask = (
+        pd.to_numeric(df[PREVIOUS_INCIDENTS_COLUMN], errors="coerce").isna()
+        | pd.to_numeric(df[PREVIOUS_RATE_COLUMN], errors="coerce").isna()
+    )
+    bad = df[bad_mask]
+    if not bad.empty:
+        keys = bad[[COL_REGION, COL_CRIME_TYPE]].astype(str).head(10).to_dict("records")
+        raise ValueError(f"전년도 feature가 누락된 지역/범죄유형이 있습니다: {keys}")
+
+
+def _validate_unique_keys(df: pd.DataFrame, context: str) -> None:
+    duplicates = df[df.duplicated([COL_REGION, COL_CRIME_TYPE], keep=False)]
+    if not duplicates.empty:
+        keys = duplicates[[COL_REGION, COL_CRIME_TYPE]].astype(str).drop_duplicates().head(10)
+        raise ValueError(f"{context}에 중복 지역/범죄유형 키가 있습니다: {keys.to_dict('records')}")
+
+
+def _prediction_year(result_df: pd.DataFrame) -> int:
+    years = pd.to_numeric(result_df[COL_YEAR], errors="coerce").dropna().astype(int).unique().tolist()
+    if len(years) != 1:
+        raise ValueError(f"이전 예측 결과의 연도가 하나로 고정되어야 합니다: {sorted(years)}")
+    return int(years[0])
+
+
+def _population_lookup(
+    population_source: pd.DataFrame,
+    region,
+    crime_type,
+    target_year: int,
+    fallback_population,
+) -> tuple[float, str]:
+    if population_source is not None and not population_source.empty:
+        source = population_source.copy()
+        source["_year"] = pd.to_numeric(source[COL_YEAR], errors="coerce")
+        source["_population"] = pd.to_numeric(source[COL_POPULATION], errors="coerce")
+        matched = source[
+            (source[COL_REGION].astype(str) == str(region))
+            & (source[COL_CRIME_TYPE].astype(str) == str(crime_type))
+            & (source["_year"] == int(target_year))
+            & source["_population"].notna()
+        ]
+        if len(matched) > 1:
+            raise ValueError(
+                f"{target_year}년 인구수 데이터가 중복되었습니다: "
+                f"지역={region}, 범죄_유형={crime_type}"
+            )
+        if len(matched) == 1:
+            value = float(matched.iloc[0]["_population"])
+            if value <= 0:
+                raise ValueError(f"{target_year}년 인구수가 0 이하입니다: 지역={region}, 범죄_유형={crime_type}")
+            return value, POPULATION_METHOD_UPLOADED
+
+    value = pd.to_numeric(pd.Series([fallback_population]), errors="coerce").iloc[0]
+    if pd.isna(value) or float(value) <= 0:
+        raise ValueError(f"{target_year}년 인구수를 결정할 수 없습니다: 지역={region}, 범죄_유형={crime_type}")
+    return float(value), POPULATION_METHOD_CARRY_FORWARD
+
+
+def _latest_actual_rows(base_df: pd.DataFrame, start_year: int) -> pd.DataFrame:
+    required = set(DEFAULT_FEATURE_COLUMNS + [COL_INCIDENTS, COL_CRIME_RATE])
+    missing = sorted(required - set(base_df.columns))
+    if missing:
+        raise ValueError(f"재귀 예측 기준 데이터에 필요한 컬럼이 없습니다: {missing}")
+
+    working = base_df.copy()
+    working["_year"] = pd.to_numeric(working[COL_YEAR], errors="coerce")
+    working["_incidents"] = pd.to_numeric(working[COL_INCIDENTS], errors="coerce")
+    working["_rate"] = pd.to_numeric(working[COL_CRIME_RATE], errors="coerce")
+    working["_population"] = pd.to_numeric(working[COL_POPULATION], errors="coerce")
+    candidates = working.dropna(subset=["_year"])
+    candidates = candidates[candidates["_year"] < int(start_year)]
+    if candidates.empty:
+        raise ValueError(f"{start_year}년 예측에 사용할 전년도 실제 데이터가 없습니다.")
+
+    key_year_duplicates = candidates[
+        candidates.duplicated([COL_REGION, COL_CRIME_TYPE, "_year"], keep=False)
+    ]
+    if not key_year_duplicates.empty:
+        keys = key_year_duplicates[[COL_REGION, COL_CRIME_TYPE, "_year"]].astype(str).head(10)
+        raise ValueError(f"기준 데이터에 중복 지역/범죄유형/연도 행이 있습니다: {keys.to_dict('records')}")
+
+    latest_index = candidates.groupby([COL_REGION, COL_CRIME_TYPE])["_year"].idxmax()
+    latest = candidates.loc[latest_index].copy().sort_values([COL_REGION, COL_CRIME_TYPE])
+    missing_required = latest[
+        latest[["_incidents", "_rate", "_population"]].isna().any(axis=1)
+    ]
+    if not missing_required.empty:
+        keys = missing_required[[COL_REGION, COL_CRIME_TYPE, "_year"]].astype(str).head(10)
+        raise ValueError(f"최신 실제 데이터의 발생 건수, 범죄율 또는 인구수가 누락되었습니다: {keys.to_dict('records')}")
+    latest_years = sorted(latest["_year"].astype(int).unique().tolist())
+    expected_base_year = int(start_year) - 1
+    if latest_years != [expected_base_year]:
+        raise ValueError(
+            f"{start_year}년 재귀 예측은 모든 지역/범죄유형의 최신 실제 연도가 "
+            f"{expected_base_year}년이어야 합니다. 현재 최신 연도={latest_years}"
+        )
+    _validate_unique_keys(latest, "기준 데이터")
+    return latest
+
+
+def build_initial_recursive_input(base_df: pd.DataFrame, start_year: int) -> pd.DataFrame:
+    latest = _latest_actual_rows(base_df, start_year)
+    rows = []
+    for _, row in latest.iterrows():
+        population, population_method = _population_lookup(
+            base_df,
+            row[COL_REGION],
+            row[COL_CRIME_TYPE],
+            int(start_year),
+            row[COL_POPULATION],
+        )
+        rows.append(
+            {
+                BASE_YEAR_COLUMN: int(start_year) - 1,
+                TARGET_YEAR_COLUMN: int(start_year),
+                COL_REGION: row[COL_REGION],
+                COL_CRIME_TYPE: row[COL_CRIME_TYPE],
+                COL_YEAR: int(start_year),
+                COL_POPULATION: population,
+                PREVIOUS_INCIDENTS_COLUMN: float(row["_incidents"]),
+                PREVIOUS_RATE_COLUMN: float(row["_rate"]),
+                PREDICTION_STEP_COLUMN: 1,
+                PREDICTION_METHOD_COLUMN: RECURSIVE_PREDICTION_METHOD,
+                POPULATION_METHOD_COLUMN: population_method,
+            }
+        )
+    result = pd.DataFrame(rows)
+    _validate_positive_population(result)
+    _validate_previous_features(result)
+    return result
+
+
+def build_next_year_input(
+    previous_prediction_df: pd.DataFrame,
+    next_year: int,
+    population_source_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    required = {
+        COL_REGION,
+        COL_CRIME_TYPE,
+        COL_YEAR,
+        COL_POPULATION,
+        PREDICTED_INCIDENTS_COLUMN,
+        PREDICTED_RATE_COLUMN,
+        PREDICTION_STEP_COLUMN,
+    }
+    missing = sorted(required - set(previous_prediction_df.columns))
+    if missing:
+        raise ValueError(f"다음 연도 입력 생성에 필요한 컬럼이 없습니다: {missing}")
+
+    previous = previous_prediction_df.copy()
+    _validate_unique_keys(previous, "이전 예측 결과")
+    previous_year = _prediction_year(previous)
+    if int(next_year) != previous_year + 1:
+        raise ValueError(f"다음 예측 연도는 이전 예측 연도 + 1이어야 합니다: {previous_year} -> {next_year}")
+
+    rows = []
+    for _, row in previous.sort_values([COL_REGION, COL_CRIME_TYPE]).iterrows():
+        population, population_method = _population_lookup(
+            population_source_df if population_source_df is not None else pd.DataFrame(),
+            row[COL_REGION],
+            row[COL_CRIME_TYPE],
+            int(next_year),
+            row[COL_POPULATION],
+        )
+        rows.append(
+            {
+                BASE_YEAR_COLUMN: previous_year,
+                TARGET_YEAR_COLUMN: int(next_year),
+                COL_REGION: row[COL_REGION],
+                COL_CRIME_TYPE: row[COL_CRIME_TYPE],
+                COL_YEAR: int(next_year),
+                COL_POPULATION: population,
+                PREVIOUS_INCIDENTS_COLUMN: float(row[PREDICTED_INCIDENTS_COLUMN]),
+                PREVIOUS_RATE_COLUMN: float(row[PREDICTED_RATE_COLUMN]),
+                PREDICTION_STEP_COLUMN: int(row[PREDICTION_STEP_COLUMN]) + 1,
+                PREDICTION_METHOD_COLUMN: RECURSIVE_PREDICTION_METHOD,
+                POPULATION_METHOD_COLUMN: population_method,
+            }
+        )
+    result = pd.DataFrame(rows)
+    _validate_positive_population(result)
+    _validate_previous_features(result)
+    return result
+
+
+def _predict_recursive_year(input_df: pd.DataFrame, model, model_path=DEFAULT_MODEL_PATH) -> pd.DataFrame:
+    _validate_positive_population(input_df)
+    _validate_previous_features(input_df)
+    result_df = input_df.copy()
+    if model is None:
+        predicted_incidents = predict(result_df, model_path=model_path)
+    else:
+        predicted_incidents = predict(model, result_df)
+    result_df[PREDICTED_INCIDENTS_COLUMN] = predicted_incidents
+    population = pd.to_numeric(result_df[COL_POPULATION], errors="coerce")
+    if population.isna().any() or (population <= 0).any():
+        raise ValueError("예측 범죄율 계산에 사용할 인구수가 누락되었거나 0 이하입니다.")
+    result_df[PREDICTED_RATE_COLUMN] = (
+        pd.to_numeric(result_df[PREDICTED_INCIDENTS_COLUMN], errors="coerce") / population * 100000
+    )
+    return _order_prediction_columns(result_df)
+
+
+def predict_recursive(
+    base_df: pd.DataFrame,
+    start_year: int,
+    end_year: int,
+    model=None,
+    model_path=DEFAULT_MODEL_PATH,
+) -> dict[int, pd.DataFrame]:
+    start_year = int(start_year)
+    end_year = int(end_year)
+    if end_year < start_year:
+        raise ValueError("재귀 예측 종료 연도는 시작 연도 이상이어야 합니다.")
+
+    active_model = model if model is not None else load_best_model(model_path)
+    results: dict[int, pd.DataFrame] = {}
+    current_input = build_initial_recursive_input(base_df, start_year)
+    for year in range(start_year, end_year + 1):
+        prediction = _predict_recursive_year(current_input, active_model, model_path=model_path)
+        results[year] = prediction
+        if year < end_year:
+            current_input = build_next_year_input(prediction, year + 1, population_source_df=base_df)
+    return results
+
+
+def predict_recursive_from_file(
+    input_path,
+    output_dir,
+    start_year: int,
+    end_year: int,
+    model=None,
+    model_path=DEFAULT_MODEL_PATH,
+) -> dict[int, pd.DataFrame]:
+    base_df = _read_prediction_file(input_path)
+    results = predict_recursive(
+        base_df,
+        start_year=start_year,
+        end_year=end_year,
+        model=model,
+        model_path=model_path,
+    )
+    output_dir = Path(output_dir)
+    for year, df in results.items():
+        output_path = output_dir / f"prediction_result_{year}.xlsx"
+        _backup_existing_output(output_path)
+        _write_prediction_file(df, output_path)
+    return results
 
 
 def predict_from_dataframe(
@@ -558,6 +855,19 @@ def _write_prediction_file(df, output_path):
         return
 
     raise ValueError("지원하지 않는 출력 파일 형식입니다. csv, xlsx, xls 파일만 사용할 수 있습니다.")
+
+
+def _backup_existing_output(output_path: Path) -> Path | None:
+    output_path = Path(output_path)
+    if not output_path.exists():
+        return None
+    index = 1
+    while True:
+        backup_path = output_path.with_name(f"{output_path.stem}_backup_{index}{output_path.suffix}")
+        if not backup_path.exists():
+            shutil.copy2(output_path, backup_path)
+            return backup_path
+        index += 1
 
 
 def predict_from_file(

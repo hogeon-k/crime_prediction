@@ -17,6 +17,8 @@ from constants import (
 class StatisticsService:
     """예측/업로드 결과 DataFrame에서 통계와 차트 데이터를 만든다."""
 
+    DATA_KIND_COLUMN = "데이터_구분"
+
     @staticmethod
     def _value_column(df: pd.DataFrame) -> str | None:
         if PREDICTED_INCIDENTS_COLUMN in df.columns:
@@ -166,27 +168,46 @@ class StatisticsService:
         return sorted(years.unique().tolist())
 
     @staticmethod
-    def region_rate_map_data(
+    def yearly_rate_summary(
         df: pd.DataFrame,
-        year: int | None = None,
-    ) -> list[dict[str, float | str]]:
+        region: str | None = None,
+        region_query: str = "",
+        crime_type_query: str = "",
+    ) -> pd.DataFrame:
         rate_column = StatisticsService._rate_column(df)
-        if rate_column is None or COL_REGION not in df.columns:
-            return []
+        if rate_column is None or COL_YEAR not in df.columns:
+            return pd.DataFrame(columns=[COL_YEAR, StatisticsService.DATA_KIND_COLUMN, COL_CRIME_RATE])
 
-        filtered = StatisticsService.filter_records(df, year=year)
-        grouped = (
-            filtered.assign(_rate=pd.to_numeric(filtered[rate_column], errors="coerce"))
-            .dropna(subset=["_rate"])
-            .groupby(COL_REGION, as_index=False)["_rate"]
-            .mean()
-            .sort_values("_rate", ascending=False)
+        filtered = StatisticsService.filter_records(
+            df,
+            region=region,
+            region_query=region_query,
+            crime_type_query=crime_type_query,
         )
+        if filtered.empty:
+            return pd.DataFrame(columns=[COL_YEAR, StatisticsService.DATA_KIND_COLUMN, COL_CRIME_RATE])
 
-        return [
-            {"region": str(row[COL_REGION]), "crime_rate": float(row["_rate"])}
-            for _, row in grouped.iterrows()
-        ]
+        working = filtered.copy()
+        if StatisticsService.DATA_KIND_COLUMN not in working.columns:
+            working[StatisticsService.DATA_KIND_COLUMN] = "actual"
+
+        working["_year"] = pd.to_numeric(working[COL_YEAR], errors="coerce")
+        working["_rate"] = pd.to_numeric(working[rate_column], errors="coerce")
+        if rate_column != COL_CRIME_RATE and COL_CRIME_RATE in working.columns:
+            actual_rates = pd.to_numeric(working[COL_CRIME_RATE], errors="coerce")
+            working["_rate"] = working["_rate"].fillna(actual_rates)
+        summary = (
+            working.dropna(subset=["_year", "_rate"])
+            .groupby(["_year", StatisticsService.DATA_KIND_COLUMN], as_index=False)["_rate"]
+            .mean()
+            .rename(columns={"_year": COL_YEAR, "_rate": COL_CRIME_RATE})
+            .sort_values([COL_YEAR, StatisticsService.DATA_KIND_COLUMN])
+        )
+        if summary.empty:
+            return pd.DataFrame(columns=[COL_YEAR, StatisticsService.DATA_KIND_COLUMN, COL_CRIME_RATE])
+
+        summary[COL_YEAR] = summary[COL_YEAR].astype(int)
+        return summary[[COL_YEAR, StatisticsService.DATA_KIND_COLUMN, COL_CRIME_RATE]]
 
     @staticmethod
     def yearly_rate_trend(
